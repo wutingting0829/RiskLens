@@ -1,4 +1,4 @@
-from .baseline_prompt import (
+from .basline_prompt import (
     PROMPT_NAME,
     PROMPT_VERSION,
     SYSTEM_PROMPT,

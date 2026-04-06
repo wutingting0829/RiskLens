@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -83,6 +84,52 @@ def load_done_keys(out_path: str) -> set:
     return done
 
 
+def write_score_json(report_path: str, score_json_path: str) -> None:
+    score_items = []
+
+    with open(report_path, "r", encoding="utf-8") as fin:
+        for line in fin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            analysis = obj.get("analysis") or {}
+            score_items.append(
+                {
+                    "file": obj.get("file"),
+                    "func_name": obj.get("func_name"),
+                    "line_start": obj.get("line_start"),
+                    "line_end": obj.get("line_end"),
+                    "baseline": obj.get("baseline"),
+                    "risk_level": analysis.get("risk_level"),
+                    "risk_score": analysis.get("risk_score"),
+                    "confidence": analysis.get("confidence"),
+                    "vulnerability_types": analysis.get("vulnerability_types", []),
+                }
+            )
+
+    avg_score = (
+        sum(item["risk_score"] for item in score_items if isinstance(item.get("risk_score"), int)) / len(score_items)
+        if score_items
+        else 0.0
+    )
+
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_report": report_path,
+        "total_functions": len(score_items),
+        "average_risk_score": round(avg_score, 2),
+        "scores": score_items,
+    }
+
+    with open(score_json_path, "w", encoding="utf-8") as fout:
+        json.dump(payload, fout, ensure_ascii=False, indent=2)
+
+
 # ---- 4) Call GPT-4o via Responses API (Structured Outputs) ----
 def call_llm(client: OpenAI, model: str, user_prompt: str, max_retries: int = 5) -> RiskResult:
     backoff = 1.0
@@ -146,6 +193,7 @@ def main():
     ap.add_argument("--repo", default=".", help="Path to git repo root (used when --git is set)")
     ap.add_argument("--git-n", type=int, default=20, help="Number of recent commit messages per file")
     ap.add_argument("--resume", action="store_true", help="Resume: skip records already written to out_path")
+    ap.add_argument("--score-json", default="", help="Optional path to write score summary as a JSON file")
     args = ap.parse_args()
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -225,6 +273,10 @@ def main():
                 print(f" V {risk.risk_level} ({risk.risk_score})")
             except Exception as e:
                 print(f" X Failed: {e}", file=sys.stderr)
+
+    if args.score_json:
+        write_score_json(args.out_path, args.score_json)
+        print(f"Wrote score JSON: {args.score_json}")
 
     print(f"\nDone. Wrote: {args.out_path}")
 
