@@ -28,7 +28,7 @@ python3 analyze_llm.py --in functions.jsonl --out risk_report.jsonl --git --repo
   -I/home/sense/nginx-1.4.0/src/http/modules \
   -I/home/sense/miniconda3/lib/clang/16/include > output.jsonl
 
-  python3 analyze_llm.py --in output.jsonl --out nginx_report.jsonl
+  python3 analyze_llm.py --in output.jsonl --out nginx_report.jsonl --score-json scores.json
   python analyze_llm.py --in functions.jsonl --runs 5 --out-dir outputs/cve-2013-2028_baseline
 
 ```
