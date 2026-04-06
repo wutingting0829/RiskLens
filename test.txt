@@ -1,0 +1,94 @@
+// #include <stdio.h>
+
+// // 這是一個測試函數
+// int calc(  int a, int b ) {
+//     /* 這裡有多行註解 
+//        Check if comments are preserved
+//     */
+//     return a + b; // 單行註解
+// }
+
+// void risky() { system("rm -rf /"); }
+
+// test.c
+// NOTE: no #include to avoid header path issues in your current environment.
+// We declare external functions manually for parsing/demo purposes.
+
+extern int system(const char *command);
+extern char *gets(char *s);          // deprecated/unsafe
+extern char *strcpy(char *dst, const char *src);
+extern int sprintf(char *str, const char *format, ...);
+extern void *malloc(unsigned long size);
+extern void free(void *ptr);
+
+// 1) Command Injection (High)
+// Risk: direct system() call; if cmd is user-controlled => RCE.
+void v_cmd_injection(const char *cmd) {
+    // Evidence: system(cmd)
+    system(cmd);
+}
+
+// 2) Buffer Overflow via gets (High)
+// Risk: gets() has no bounds checking; classic stack overflow.
+void v_gets_overflow() {
+    char buf[32];
+    // Evidence: gets(buf)
+    gets(buf);
+}
+
+// 3) Buffer Overflow via strcpy (High)
+// Risk: copies unbounded src into fixed-size dst.
+void v_strcpy_overflow(const char *input) {
+    char buf[16];
+    // Evidence: strcpy(buf, input)
+    strcpy(buf, input);
+}
+
+// 4) Format String Vulnerability (High)
+// Risk: user input used as format string.
+void v_format_string(const char *user_fmt) {
+    char out[128];
+    // Evidence: sprintf(out, user_fmt)
+    sprintf(out, user_fmt);
+}
+
+// 5) Integer Overflow leading to Heap Overflow (High/Medium depending on reasoning)
+// Risk: size = count * 4 can overflow, malloc allocates small buffer, loop writes more.
+int v_int_overflow_alloc(unsigned int count, const int *src) {
+    unsigned int size = count * 4;            // may overflow
+    int *buf = (int*)malloc(size);            // alloc too small if overflow
+    if (!buf) return -1;
+
+    for (unsigned int i = 0; i < count; i++)  // writes count ints => 4*count bytes
+        buf[i] = src[i];
+
+    free(buf);
+    return 0;
+}
+
+// 6) Out-of-Bounds Read/Write (Medium/High)
+// Risk: index not validated.
+int v_oob_access(int *arr, int len, int idx, int value) {
+    // Evidence: arr[idx] without bounds check
+    arr[idx] = value;
+    return arr[idx];
+}
+
+// 7) Use-After-Free (High)
+// Risk: accessing freed memory.
+int v_use_after_free() {
+    int *p = (int*)malloc(4);
+    if (!p) return -1;
+    *p = 42;
+    free(p);
+    // Evidence: dereference after free
+    return *p;
+}
+
+// 8) Path Traversal / Arbitrary File Path (Medium/High)
+// Risk: building file path with user-supplied name; if used for open(), can traverse.
+int v_path_traversal(char *dst, const char *name) {
+    // Build "data/<name>" but name may contain "../"
+    // Evidence: sprintf with unvalidated name
+    return sprintf(dst, "data/%s", name);
+}

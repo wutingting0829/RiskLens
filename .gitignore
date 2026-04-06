@@ -1,0 +1,11 @@
+build/
+*.o
+*.out
+*.jsonl
+
+# Local experiment inputs / outputs
+outputs/
+
+# Python cache
+__pycache__/
+*.pyc

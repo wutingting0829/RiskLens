@@ -1,0 +1,97 @@
+// src/main.cpp
+#include "clang/AST/ASTConsumer.h"
+#include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/FrontendActions.h"
+#include "clang/Tooling/CommonOptionsParser.h"
+#include "clang/Tooling/Tooling.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/raw_ostream.h"
+#include <string>
+
+
+using namespace clang;
+using namespace clang::tooling;
+using namespace llvm;
+
+
+
+// ========================================================
+// 1. RecursiveASTVisitor: 負責 "走訪" AST 並抓出我們感興趣的節點
+// ========================================================
+
+class FindFunctionsVisitor : public RecursiveASTVisitor<FindFunctionsVisitor> {
+public:
+    explicit FindFunctionsVisitor(ASTContext *Context) : Context(Context) {}
+    //當它走到一個 "FunctionDecl" (函數宣告/定義) 時會自動呼叫此函式
+    bool VisitFunctionDecl(FunctionDecl *FD){
+        //只印出有實作內容 (Body) 的函數定義，忽略單純的 Header 宣告
+        if (FD->hasBody()){
+            //取得函數名稱
+            std::string FuncName = FD->getNameInfo().getName().getAsString();
+            //取得函數所在的檔案與行號 (檔案名稱:行號:列號)
+            FullSourceLoc FullLocation = Context->getFullLoc(FD->getBeginLoc());
+
+            if(FullLocation.isValid()){
+                outs() << "[catched function]" << FuncName
+                       << "@" << FullLocation.getFileLoc().getLineNumber()
+                       << ":" << FullLocation.getFileLoc().getColumnNumber() <<"\n";
+
+            }
+        }
+        return true; //繼續走訪其他節點
+    }
+private:
+    ASTContext *Context;
+};
+
+// ========================================================
+// 2. ASTConsumer: 負責接收 ASTContext 並啟動 Visitor
+// ========================================================
+class FindFunctionsConsumer : public ASTConsumer {
+public:
+    explicit FindFunctionsConsumer(ASTContext *Context) : Visitor(Context) {}
+
+    //(Translation Unit) 被 Parse 完後，會呼叫這裡
+    virtual void HandleTranslationUnit(ASTContext &Context) override {
+        //啟動 AST Visitor 開始走訪 AST
+        Visitor.TraverseDecl(Context.getTranslationUnitDecl());
+    }
+private:
+    FindFunctionsVisitor Visitor;
+};
+
+// ========================================================
+// 3. ASTFrontendAction: 建立 Consumer
+// ========================================================
+class FindFunctionsAction : public ASTFrontendAction {
+public:
+    //回傳我們自定義的 Consumer
+    virtual std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
+                                                           StringRef file) override {
+        return std::make_unique<FindFunctionsConsumer>(&CI.getASTContext());
+    }
+};
+
+// 設定 Command Line 參數類別
+static cl::OptionCategory MyToolCategory("my-tool options");
+
+int main(int argc, const char **argv){
+    // 3. 解析命令列參數（LLVM 16 正確寫法）
+    auto ExpectedParser = CommonOptionsParser::create(argc, argv, MyToolCategory);
+    if (!ExpectedParser) {
+        errs() << ExpectedParser.takeError();
+        return 1;
+    }
+    CommonOptionsParser &OptionsParser = ExpectedParser.get();
+
+    // 4. 建立 ClangTool
+    ClangTool Tool(
+        OptionsParser.getCompilations(),
+        OptionsParser.getSourcePathList()
+    );
+
+    // 5. 執行工具
+    return Tool.run(newFrontendActionFactory<FindFunctionsAction>().get());
+}
+

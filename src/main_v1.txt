@@ -1,0 +1,45 @@
+// src/main.cpp
+#include "clang/Frontend/FrontendActions.h"
+#include "clang/Tooling/CommonOptionsParser.h"
+#include "clang/Tooling/Tooling.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/raw_ostream.h"
+
+using namespace clang;
+using namespace clang::tooling;
+using namespace llvm;
+
+//1.  Command line options（LibTooling 必備）
+static cl::OptionCategory MyToolCategory("my-tool options");
+
+//2. Custom AST Consumer : FrontendAction
+// 繼承 SyntaxOnlyAction 代表我們只做語法分析，不產生執行檔
+class MyFrontendAction : public SyntaxOnlyAction {
+    protected:
+        bool BeginSourceFileAction(CompilerInstance &CI) override {
+            outs() << "starting processing file:" << getCurrentFile() << "\n";
+            return true;
+        }
+    
+};
+
+int main(int argc, const char **argv){
+    // 3. 解析命令列參數（LLVM 16 正確寫法）
+    auto ExpectedParser = CommonOptionsParser::create(argc, argv, MyToolCategory);
+    if (!ExpectedParser) {
+        errs() << ExpectedParser.takeError();
+        return 1;
+    }
+    CommonOptionsParser &OptionsParser = ExpectedParser.get();
+
+    // 4. 建立 ClangTool
+    ClangTool Tool(
+        OptionsParser.getCompilations(),
+        OptionsParser.getSourcePathList()
+    );
+
+    // 5. 執行工具
+    return Tool.run(newFrontendActionFactory<MyFrontendAction>().get());
+
+}
+
