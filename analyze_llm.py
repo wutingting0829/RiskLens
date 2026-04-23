@@ -28,8 +28,9 @@ class Evidence(BaseModel):
 
 
 class RiskResult(BaseModel):
-    risk_level: Literal["High", "Medium", "Low"]
-    risk_score: int = Field(..., ge=0, le=100, description="A numerical score from 0 (safe) to 100 (critical).")
+    risk_level: Literal["Critical", "High", "Medium", "Low", "None"]
+    risk_score: float = Field(..., ge=0.0, le=10.0, description="Estimated CVSS v3.1 Base Score from 0.0 to 10.0.")
+    cvss_vector: str = Field(..., description="Estimated CVSS v3.1 vector string, for example CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H.")
     vulnerability_types: List[str] = Field(..., description="List of potential vulnerability categories.")
     reasons: List[str] = Field(..., min_length=1, description="Concise reasons explaining why this risk score was assigned.")
     evidence: List[Evidence] = Field(default_factory=list, description="List of evidence snippets.")
@@ -107,13 +108,14 @@ def write_score_json(report_path: str, score_json_path: str) -> None:
                     "baseline": obj.get("baseline"),
                     "risk_level": analysis.get("risk_level"),
                     "risk_score": analysis.get("risk_score"),
+                    "cvss_vector": analysis.get("cvss_vector"),
                     "confidence": analysis.get("confidence"),
                     "vulnerability_types": analysis.get("vulnerability_types", []),
                 }
             )
 
     avg_score = (
-        sum(item["risk_score"] for item in score_items if isinstance(item.get("risk_score"), int)) / len(score_items)
+        sum(item["risk_score"] for item in score_items if isinstance(item.get("risk_score"), (int, float))) / len(score_items)
         if score_items
         else 0.0
     )

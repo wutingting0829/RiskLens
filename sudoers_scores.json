@@ -1,0 +1,284 @@
+{
+  "generated_at": "2026-04-13T11:42:09.124719+00:00",
+  "source_report": "sudoers_report.jsonl",
+  "total_functions": 20,
+  "average_risk_score": 2.31,
+  "scores": [
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "sudoers_check_common",
+      "line_start": 347,
+      "line_end": 629,
+      "baseline": 50,
+      "risk_level": "Low",
+      "risk_score": 2.5,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:H/PR:H/UI:N/S:U/C:L/I:L/A:N",
+      "confidence": 0.7,
+      "vulnerability_types": [
+        "CWE-285: Improper Authorization",
+        "CWE-269: Improper Privilege Management"
+      ]
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "sudoers_check_cmnd",
+      "line_start": 638,
+      "line_end": 887,
+      "baseline": 35,
+      "risk_level": "Medium",
+      "risk_score": 5.3,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:L",
+      "confidence": 0.7,
+      "vulnerability_types": [
+        "CWE-119",
+        "CWE-134"
+      ]
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "sudoers_reinit_defaults",
+      "line_start": 138,
+      "line_end": 176,
+      "baseline": 20,
+      "risk_level": "Low",
+      "risk_score": 2.5,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:H/PR:H/UI:N/S:U/C:L/I:L/A:L",
+      "confidence": 0.6,
+      "vulnerability_types": [
+        "CWE-252: Unchecked Return Value"
+      ]
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "format_iolog_path",
+      "line_start": 288,
+      "line_end": 322,
+      "baseline": 20,
+      "risk_level": "Medium",
+      "risk_score": 5.3,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:L",
+      "confidence": 0.7,
+      "vulnerability_types": [
+        "CWE-134: Format String Vulnerability",
+        "CWE-120: Buffer Overflow"
+      ]
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "sudoers_list",
+      "line_start": 942,
+      "line_end": 1004,
+      "baseline": 20,
+      "risk_level": "Medium",
+      "risk_score": 5.3,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:H/UI:N/S:U/C:L/I:L/A:L",
+      "confidence": 0.7,
+      "vulnerability_types": [
+        "CWE-120",
+        "CWE-401"
+      ]
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "set_cmnd_path",
+      "line_start": 1095,
+      "line_end": 1137,
+      "baseline": 20,
+      "risk_level": "Low",
+      "risk_score": 2.5,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:H/PR:H/UI:N/S:U/C:L/I:L/A:L",
+      "confidence": 0.6,
+      "vulnerability_types": [
+        "CWE-416: Use After Free",
+        "CWE-404: Improper Resource Shutdown or Release"
+      ]
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "set_cmnd",
+      "line_start": 1153,
+      "line_end": 1246,
+      "baseline": 20,
+      "risk_level": "Low",
+      "risk_score": 2.5,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:H/PR:H/UI:N/S:U/C:L/I:L/A:L",
+      "confidence": 0.7,
+      "vulnerability_types": [
+        "CWE-252: Unchecked Return Value",
+        "CWE-404: Improper Resource Shutdown or Release"
+      ]
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "sudoers_cleanup",
+      "line_start": 1517,
+      "line_end": 1556,
+      "baseline": 15,
+      "risk_level": "Low",
+      "risk_score": 2.5,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:H/UI:N/S:U/C:L/I:L/A:L",
+      "confidence": 0.6,
+      "vulnerability_types": [
+        "CWE-416: Use After Free"
+      ]
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "set_cmnd",
+      "line_start": 66,
+      "line_end": 66,
+      "baseline": 5,
+      "risk_level": "None",
+      "risk_score": 0.0,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+      "confidence": 0.2,
+      "vulnerability_types": []
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "init_vars",
+      "line_start": 67,
+      "line_end": 67,
+      "baseline": 5,
+      "risk_level": "None",
+      "risk_score": 0.0,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+      "confidence": 0.2,
+      "vulnerability_types": []
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "set_runaspw",
+      "line_start": 69,
+      "line_end": 69,
+      "baseline": 5,
+      "risk_level": "None",
+      "risk_score": 0.0,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+      "confidence": 0.2,
+      "vulnerability_types": []
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "set_runasgr",
+      "line_start": 70,
+      "line_end": 70,
+      "baseline": 5,
+      "risk_level": "None",
+      "risk_score": 0.0,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+      "confidence": 0.2,
+      "vulnerability_types": []
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "sudoers_init",
+      "line_start": 184,
+      "line_end": 281,
+      "baseline": 5,
+      "risk_level": "Medium",
+      "risk_score": 5.3,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:L",
+      "confidence": 0.7,
+      "vulnerability_types": [
+        "CWE-269: Improper Privilege Management",
+        "CWE-284: Improper Access Control"
+      ]
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "cb_lookup",
+      "line_start": 324,
+      "line_end": 337,
+      "baseline": 5,
+      "risk_level": "None",
+      "risk_score": 0.0,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+      "confidence": 0.9,
+      "vulnerability_types": []
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "sudoers_validate_user",
+      "line_start": 894,
+      "line_end": 935,
+      "baseline": 5,
+      "risk_level": "Low",
+      "risk_score": 2.5,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:H/UI:N/S:U/C:N/I:N/A:L",
+      "confidence": 0.6,
+      "vulnerability_types": [
+        "CWE-401: Memory Leak"
+      ]
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "init_vars",
+      "line_start": 1009,
+      "line_end": 1089,
+      "baseline": 5,
+      "risk_level": "Low",
+      "risk_score": 2.5,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:H/UI:N/S:U/C:L/I:L/A:N",
+      "confidence": 0.6,
+      "vulnerability_types": [
+        "CWE-665: Improper Initialization"
+      ]
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "set_cmnd_status",
+      "line_start": 1143,
+      "line_end": 1147,
+      "baseline": 5,
+      "risk_level": "None",
+      "risk_score": 0.0,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+      "confidence": 0.8,
+      "vulnerability_types": []
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "open_file",
+      "line_start": 1248,
+      "line_end": 1277,
+      "baseline": 5,
+      "risk_level": "Low",
+      "risk_score": 2.5,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:H/UI:N/S:U/C:L/I:L/A:N",
+      "confidence": 0.6,
+      "vulnerability_types": [
+        "CWE-732: Incorrect Permission Assignment for Critical Resource"
+      ]
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "open_sudoers",
+      "line_start": 1283,
+      "line_end": 1376,
+      "baseline": 5,
+      "risk_level": "Low",
+      "risk_score": 2.5,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:H/PR:H/UI:N/S:U/C:N/I:N/A:L",
+      "confidence": 0.7,
+      "vulnerability_types": [
+        "CWE-252: Unchecked Return Value",
+        "CWE-404: Improper Resource Shutdown or Release"
+      ]
+    },
+    {
+      "file": "/home/sense/sudo/plugins/sudoers/sudoers.c",
+      "func_name": "set_runaspw",
+      "line_start": 1434,
+      "line_end": 1462,
+      "baseline": 5,
+      "risk_level": "Low",
+      "risk_score": 2.5,
+      "cvss_vector": "CVSS:3.1/AV:L/AC:H/PR:H/UI:N/S:U/C:L/I:L/A:N",
+      "confidence": 0.6,
+      "vulnerability_types": [
+        "CWE-269"
+      ]
+    }
+  ]
+}

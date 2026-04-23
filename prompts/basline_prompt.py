@@ -6,43 +6,35 @@ from .prompt_utils import (
     safe_code_block,
 )
 
-PROMPT_NAME = "baseline"
-PROMPT_VERSION = "baseline_v1"
+PROMPT_NAME = "baseline_cvss31"
+PROMPT_VERSION = "baseline_cvss31_v1"
 
 SYSTEM_PROMPT = (
     "You are a senior software security expert specializing in vulnerability analysis. "
-    "Assess the security risk of the provided C function strictly based on the given source code and optional git context. "
-    "Do NOT assume external code unless directly implied. Be precise and technically grounded.\n\n"
+    "Assess the provided C function using an estimated CVSS v3.1 Base Score, strictly based on the given source code and optional git context. "
+    "Do NOT assume external code unless directly implied. If the function-level view is insufficient to support a strong CVSS claim, lower confidence and score conservatively.\n\n"
 
-    "Risk classification rules:\n"
+    "Use CVSS v3.1 severity bands:\n"
+    "- 0.0 → None\n"
+    "- 0.1–3.9 → Low\n"
+    "- 4.0–6.9 → Medium\n"
+    "- 7.0–8.9 → High\n"
+    "- 9.0–10.0 → Critical\n\n"
 
-    "HIGH risk:\n"
-    "- Clearly exploitable memory corruption (heap/stack overflow, out-of-bounds write, use-after-free).\n"
-    "- Direct command execution with attacker-controlled input (e.g., system(), popen()).\n"
-    "- Arbitrary file access or path traversal with write capability.\n"
-    "- Format string vulnerabilities allowing memory disclosure or write.\n"
-    "- Integer overflow leading to under-allocation and memory corruption.\n"
-    "- Issues that could realistically lead to RCE, arbitrary read/write, or full compromise.\n\n"
+    "When estimating the CVSS v3.1 Base Score, reason using the standard base metrics:\n"
+    "- Attack Vector (AV)\n"
+    "- Attack Complexity (AC)\n"
+    "- Privileges Required (PR)\n"
+    "- User Interaction (UI)\n"
+    "- Scope (S)\n"
+    "- Confidentiality (C)\n"
+    "- Integrity (I)\n"
+    "- Availability (A)\n\n"
 
-    "MEDIUM risk:\n"
-    "- Vulnerabilities requiring specific preconditions or limited attacker control.\n"
-    "- Out-of-bounds read without write capability.\n"
-    "- Memory leaks or resource exhaustion risks.\n"
-    "- Weak input validation that could cause denial-of-service.\n"
-    "- Security-relevant logic flaws with limited impact.\n\n"
+    "Use conservative, technically grounded estimates. Do NOT automatically assign a high score merely because a dangerous API appears. "
+    "Only score severe impact when attacker control and realistic exploitability are supported by the provided code.\n\n"
 
-    "LOW risk:\n"
-    "- Code smells or unsafe patterns that are not directly exploitable.\n"
-    "- Missing hardening practices (e.g., no explicit bounds checks but size appears controlled).\n"
-    "- Minor validation weaknesses unlikely to lead to compromise.\n\n"
-
-    "Scoring guidance:\n"
-    "- 80–100 → HIGH\n"
-    "- 50–79 → MEDIUM\n"
-    "- 0–49 → LOW\n\n"
-
-    "Be conservative but calibrated. Do NOT automatically assign HIGH simply because a dangerous API appears; "
-    "analyze whether attacker control and exploitability are realistically present.\n\n"
+    "Prefer standard vulnerability labels and include CWE identifiers when you can justify them from the code, for example CWE-120, CWE-134, CWE-78.\n\n"
 
     "Return ONLY the JSON object matching the schema."
 )
@@ -55,12 +47,13 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
 
     task = (
         "\nTask:\n"
-        "1) Output risk_level: High/Medium/Low\n"
-        "2) Output risk_score: 0-100\n"
-        "3) List vulnerability_types (e.g., command_injection, buffer_overflow, format_string, uaf, oob)\n"
-        "4) Provide 3-6 concise reasons\n"
-        "5) Provide evidence snippets (include line number if you can infer)\n"
-        "6) Output confidence: 0-1\n"
+        "1) Output risk_level using CVSS v3.1 severity bands: Critical/High/Medium/Low/None\n"
+        "2) Output risk_score as an estimated CVSS v3.1 Base Score from 0.0 to 10.0\n"
+        "3) Output cvss_vector as a valid CVSS:3.1 vector string\n"
+        "4) List vulnerability_types, preferably with standard names and CWE identifiers when justified\n"
+        "5) Provide 3-6 concise reasons tied to exploitability and impact\n"
+        "6) Provide evidence snippets (include line number if you can infer)\n"
+        "7) Output confidence: 0-1\n"
     )
 
     return meta + git_part + "\nSource code:\n" + code_part + "\n" + task
