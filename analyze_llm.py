@@ -41,7 +41,6 @@ class RiskResult(BaseModel):
 def is_git_repo(path: str) -> bool:
     return os.path.isdir(os.path.join(path, ".git"))
 
-
 def get_git_context(repo: str, file_path: str, n: int) -> dict:
     """
     File-level git log summary (MVP):
@@ -60,6 +59,7 @@ def get_git_context(repo: str, file_path: str, n: int) -> dict:
 
 
 # ---- 3) Utility: stable cache key ----
+# 每一個 function record 建一個穩定識別碼 _key
 def record_key(rec: dict) -> str:
     h = hashlib.sha256((rec.get("code") or "").encode("utf-8")).hexdigest()[:16]
     return f"{rec.get('file','')}::{rec.get('func_name','')}::{rec.get('line_start','?')}-{rec.get('line_end','?')}::{h}"
@@ -85,6 +85,7 @@ def load_done_keys(out_path: str) -> set:
     return done
 
 
+# 目前只算 total_functions, average_risk_score, scores
 def write_score_json(report_path: str, score_json_path: str) -> None:
     score_items = []
 
@@ -133,6 +134,7 @@ def write_score_json(report_path: str, score_json_path: str) -> None:
 
 
 # ---- 4) Call GPT-4o via Responses API (Structured Outputs) ----
+# current MVP: 組 system + user prompt --> 用 responses.parse --> 要求輸出符合 RiskResult --> 失敗就 retry/backoff
 def call_llm(client: OpenAI, model: str, user_prompt: str, max_retries: int = 5) -> RiskResult:
     backoff = 1.0
     last_err = None
@@ -235,6 +237,7 @@ def main():
     done_keys = load_done_keys(args.out_path) if args.resume else set()
     git_cache: Dict[str, dict] = {}
 
+    # 開 output file 並逐筆呼叫 LLM分析，寫入結果（包含原始資料 + LLM分析 + baseline + git context if any）
     mode = "a" if args.resume else "w"
     with open(args.out_path, mode, encoding="utf-8") as fout:
         for idx, rec in enumerate(records, 1):
