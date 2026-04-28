@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_CEILING
 from typing import Dict, List, Literal, Optional, Tuple
 
 from openai import OpenAI
@@ -30,14 +31,51 @@ class Evidence(BaseModel):
     snippet: str = Field(..., description="Exact code snippet from the source that supports the claim.")
 
 
-class RiskResult(BaseModel):
-    risk_level: Literal["Critical", "High", "Medium", "Low", "None"]
-    risk_score: float = Field(..., ge=0.0, le=10.0, description="Estimated CVSS v3.1 Base Score from 0.0 to 10.0.")
-    cvss_vector: str = Field(..., description="Estimated CVSS v3.1 vector string, for example CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H.")
+class LLMFactorResult(BaseModel):
+    attack_vector: Literal["N", "A", "L", "P"] = Field(..., description="CVSS v3.1 Attack Vector: N/A/L/P.")
+    attack_complexity: Literal["L", "H"] = Field(..., description="CVSS v3.1 Attack Complexity: L/H.")
+    privileges_required: Literal["N", "L", "H"] = Field(..., description="CVSS v3.1 Privileges Required: N/L/H.")
+    user_interaction: Literal["N", "R"] = Field(..., description="CVSS v3.1 User Interaction: N/R.")
+    scope: Literal["U", "C"] = Field(..., description="CVSS v3.1 Scope: U/C.")
+    confidentiality: Literal["H", "L", "N"] = Field(..., description="CVSS v3.1 Confidentiality impact: H/L/N.")
+    integrity: Literal["H", "L", "N"] = Field(..., description="CVSS v3.1 Integrity impact: H/L/N.")
+    availability: Literal["H", "L", "N"] = Field(..., description="CVSS v3.1 Availability impact: H/L/N.")
+    root_cause_specificity: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="How specifically this function appears to be the vulnerability root-cause candidate (0.0 to 1.0).",
+    )
+    attacker_control: float = Field(..., ge=0.0, le=1.0, description="How directly attacker-controlled input appears to reach security-sensitive behavior.")
+    boundary_crossing: float = Field(..., ge=0.0, le=1.0, description="How strongly the function sits at a trust, parser, privilege, policy, command, or file boundary.")
+    input_validation_weakness: float = Field(..., ge=0.0, le=1.0, description="How strongly the function shows missing, weak, or bypassable validation.")
+    memory_safety_relevance: float = Field(..., ge=0.0, le=1.0, description="How relevant the function is to memory safety risk.")
+    command_or_path_influence: float = Field(..., ge=0.0, le=1.0, description="How strongly the function influences command, path, environment, or executable resolution.")
+    parser_state_influence: float = Field(..., ge=0.0, le=1.0, description="How strongly the function influences parser state, tokenization, or state transitions.")
+    privilege_or_policy_influence: float = Field(..., ge=0.0, le=1.0, description="How strongly the function influences privilege, authorization, policy, or security decisions.")
+    error_handling_relevance: float = Field(..., ge=0.0, le=1.0, description="How relevant error handling in this function is to exploitability or bypass.")
+    malformed_input_failure_mode: float = Field(..., ge=0.0, le=1.0, description="How directly malformed input can drive the function into the suspected parser failure mode or vulnerable state transition.")
+    parser_state_transition_inconsistency: float = Field(..., ge=0.0, le=1.0, description="How directly the function can create or resolve inconsistent parser state transitions.")
+    length_state_mismatch_risk: float = Field(..., ge=0.0, le=1.0, description="How directly the function relates to mismatches between declared length, consumed bytes, remaining bytes, and parser state.")
+    parser_progress_manipulation: float = Field(..., ge=0.0, le=1.0, description="How directly the function manipulates parser progress such as cursor advancement, chunk length, remaining length, offsets, or state-machine progress.")
+    malformed_chunk_handling_path: float = Field(..., ge=0.0, le=1.0, description="How central the function is to malformed chunk handling or malformed chunked-input edge cases.")
+    security_impact_likelihood: float = Field(..., ge=0.0, le=1.0, description="How likely a bug here would have meaningful security impact.")
+    evidence_strength: float = Field(..., ge=0.0, le=1.0, description="How strong the function-level evidence is, independent of final severity.")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence level in this factor assessment (0.0 to 1.0).")
     vulnerability_types: List[str] = Field(..., description="List of potential vulnerability categories.")
-    reasons: List[str] = Field(..., min_length=1, description="Concise reasons explaining why this risk score was assigned.")
+    reasons: List[str] = Field(..., min_length=1, description="Concise reasons explaining the selected factors and root-cause specificity.")
     evidence: List[Evidence] = Field(default_factory=list, description="List of evidence snippets.")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence level in this assessment (0.0 to 1.0).")
+
+
+class RiskResult(LLMFactorResult):
+    severity_score: float = Field(..., ge=0.0, le=10.0, description="Official CVSS v3.1 Base Score computed from the selected factors.")
+    prioritization_score: float = Field(..., ge=0.0, le=1.0, description="Function-level root-cause prioritization score used for ranking.")
+    risk_level: Literal["Critical", "High", "Medium", "Low", "None"]
+    risk_score: float = Field(..., ge=0.0, le=10.0, description="Alias of severity_score for backward compatibility.")
+    cvss_vector: str = Field(..., description="CVSS v3.1 vector string, for example CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H.")
+    cvss_iss: float = Field(..., ge=0.0, le=1.0, description="CVSS v3.1 Impact Sub-Score.")
+    cvss_impact: float = Field(..., description="CVSS v3.1 Impact component.")
+    cvss_exploitability: float = Field(..., description="CVSS v3.1 Exploitability component.")
 
 
 # =========================
@@ -130,6 +168,149 @@ def stdev_or_zero(values: List[float]) -> float:
 def round_metric(value: float) -> float:
     return round(value, 4)
 
+
+# =========================
+# CVSS v3.1 Base Score 公式
+# =========================
+AV_VALUES = {
+    "N": 0.85,
+    "A": 0.62,
+    "L": 0.55,
+    "P": 0.20,
+}
+
+AC_VALUES = {
+    "L": 0.77,
+    "H": 0.44,
+}
+
+PR_VALUES = {
+    "U": {
+        "N": 0.85,
+        "L": 0.62,
+        "H": 0.27,
+    },
+    "C": {
+        "N": 0.85,
+        "L": 0.68,
+        "H": 0.50,
+    },
+}
+
+UI_VALUES = {
+    "N": 0.85,
+    "R": 0.62,
+}
+
+IMPACT_VALUES = {
+    "H": 0.56,
+    "L": 0.22,
+    "N": 0.0,
+}
+
+
+def cvss_roundup(value: float) -> float:
+    """
+    CVSS v3.1 roundup: round up to one decimal place.
+    Decimal avoids floating-point artifacts around tenth boundaries.
+    """
+    return float(Decimal(str(value)).quantize(Decimal("0.1"), rounding=ROUND_CEILING))
+
+
+def severity_band(score: float) -> Literal["Critical", "High", "Medium", "Low", "None"]:
+    if score == 0.0:
+        return "None"
+    if score < 4.0:
+        return "Low"
+    if score < 7.0:
+        return "Medium"
+    if score < 9.0:
+        return "High"
+    return "Critical"
+
+
+def build_cvss_vector(factors: LLMFactorResult) -> str:
+    return (
+        "CVSS:3.1/"
+        f"AV:{factors.attack_vector}/"
+        f"AC:{factors.attack_complexity}/"
+        f"PR:{factors.privileges_required}/"
+        f"UI:{factors.user_interaction}/"
+        f"S:{factors.scope}/"
+        f"C:{factors.confidentiality}/"
+        f"I:{factors.integrity}/"
+        f"A:{factors.availability}"
+    )
+
+
+def clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def compute_prioritization_score(factors: LLMFactorResult, severity_score: float) -> float:
+    """
+    Function-level ranking score. CVSS severity is only a small supporting signal;
+    root-cause locality and observable code proxies drive the ranking.
+    """
+    score = (
+        0.28 * factors.root_cause_specificity
+        + 0.16 * factors.parser_state_transition_inconsistency
+        + 0.13 * factors.length_state_mismatch_risk
+        + 0.12 * factors.parser_progress_manipulation
+        + 0.10 * factors.malformed_chunk_handling_path
+        + 0.08 * factors.malformed_input_failure_mode
+        + 0.04 * factors.parser_state_influence
+        + 0.03 * factors.security_impact_likelihood
+        + 0.02 * factors.attacker_control
+        + 0.01 * factors.input_validation_weakness
+        + 0.02 * factors.evidence_strength
+        + 0.01 * (severity_score / 10.0)
+    )
+    return round_metric(clamp01(score))
+
+
+def compute_cvss_result(factors: LLMFactorResult) -> RiskResult:
+    av = AV_VALUES[factors.attack_vector]
+    ac = AC_VALUES[factors.attack_complexity]
+    pr = PR_VALUES[factors.scope][factors.privileges_required]
+    ui = UI_VALUES[factors.user_interaction]
+    c = IMPACT_VALUES[factors.confidentiality]
+    i = IMPACT_VALUES[factors.integrity]
+    a = IMPACT_VALUES[factors.availability]
+
+    iss = 1 - ((1 - c) * (1 - i) * (1 - a))
+    if factors.scope == "U":
+        impact = 6.42 * iss
+    else:
+        impact = 7.52 * (iss - 0.029) - 3.25 * ((iss - 0.02) ** 15)
+
+    exploitability = 8.22 * av * ac * pr * ui
+
+    if impact <= 0:
+        severity_score = 0.0
+    elif factors.scope == "U":
+        severity_score = cvss_roundup(min(impact + exploitability, 10))
+    else:
+        severity_score = cvss_roundup(min(1.08 * (impact + exploitability), 10))
+
+    prioritization_score = compute_prioritization_score(factors, severity_score)
+
+    payload = factors.model_dump()
+    payload.update(
+        {
+            "severity_score": severity_score,
+            "prioritization_score": prioritization_score,
+            "risk_score": severity_score,
+            "risk_level": severity_band(severity_score),
+            "cvss_vector": build_cvss_vector(factors),
+            "cvss_iss": round_metric(iss),
+            "cvss_impact": round_metric(impact),
+            "cvss_exploitability": round_metric(exploitability),
+        }
+    )
+    return RiskResult(**payload)
+
+
 # 從單次 run 的報告檔中擷取重點欄位，輸出一份較精簡的 score summary JSON。
 def write_score_json(report_path: str, score_json_path: str) -> None:
     score_items = []
@@ -144,22 +325,47 @@ def write_score_json(report_path: str, score_json_path: str) -> None:
                 "line_end": obj.get("line_end"),
                 "baseline": obj.get("baseline"),
                 "risk_level": analysis.get("risk_level"),
+                "prioritization_score": analysis.get("prioritization_score"),
+                "severity_score": analysis.get("severity_score"),
                 "risk_score": analysis.get("risk_score"),
                 "cvss_vector": analysis.get("cvss_vector"),
+                "root_cause_specificity": analysis.get("root_cause_specificity"),
+                "malformed_input_failure_mode": analysis.get("malformed_input_failure_mode"),
+                "parser_state_transition_inconsistency": analysis.get("parser_state_transition_inconsistency"),
+                "length_state_mismatch_risk": analysis.get("length_state_mismatch_risk"),
+                "parser_progress_manipulation": analysis.get("parser_progress_manipulation"),
+                "malformed_chunk_handling_path": analysis.get("malformed_chunk_handling_path"),
+                "attacker_control": analysis.get("attacker_control"),
+                "input_validation_weakness": analysis.get("input_validation_weakness"),
+                "security_impact_likelihood": analysis.get("security_impact_likelihood"),
+                "evidence_strength": analysis.get("evidence_strength"),
                 "confidence": analysis.get("confidence"),
                 "vulnerability_types": analysis.get("vulnerability_types", []),
             }
         )
 
-    avg_score = mean_or_zero(
-        [item["risk_score"] for item in score_items if isinstance(item.get("risk_score"), (int, float))]
+    avg_priority = mean_or_zero(
+        [
+            item["prioritization_score"]
+            for item in score_items
+            if isinstance(item.get("prioritization_score"), (int, float))
+        ]
+    )
+    avg_severity = mean_or_zero(
+        [
+            item["severity_score"]
+            for item in score_items
+            if isinstance(item.get("severity_score"), (int, float))
+        ]
     )
 
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source_report": report_path,
         "total_functions": len(score_items),
-        "average_risk_score": round(avg_score, 2),
+        "average_prioritization_score": round(avg_priority, 4),
+        "average_severity_score": round(avg_severity, 2),
+        "average_risk_score": round(avg_severity, 2),
         "scores": score_items,
     }
     write_json(score_json_path, payload)
@@ -179,11 +385,11 @@ def call_llm(client: OpenAI, model: str, user_prompt: str, max_retries: int = 5)
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                text_format=RiskResult,
+                text_format=LLMFactorResult,
                 temperature=DEFAULT_TEMPERATURE,
             )
-            result: RiskResult = resp.output_parsed
-            return result
+            factors: LLMFactorResult = resp.output_parsed
+            return compute_cvss_result(factors)
         except Exception as e:
             last_err = e
             time.sleep(backoff)
@@ -335,7 +541,7 @@ def analyze_single_run(
                 fout.write(json.dumps(out, ensure_ascii=False) + "\n")
                 fout.flush()
                 run_results.append(out)
-                print(f" V {risk.risk_level} ({risk.risk_score})")
+                print(f" V P={risk.prioritization_score} CVSS={risk.severity_score} {risk.risk_level}")
             except Exception as e:
                 print(f" X Failed: {e}", file=sys.stderr)
 
@@ -348,15 +554,21 @@ def analyze_single_run(
 # 排名 / 多 run 彙整
 # ========================
 def assign_ranks(entries: List[dict]) -> Dict[str, int]:
-    sortable: List[Tuple[str, float]] = []
+    sortable: List[Tuple[str, float, float, float, float]] = []
     for item in entries:
         analysis = item.get("analysis") or {}
-        score = analysis.get("risk_score")
+        score = analysis.get("prioritization_score")
         if isinstance(score, (int, float)) and not math.isnan(score):
-            sortable.append((item["_key"], float(score)))
+            root_cause_specificity = analysis.get("root_cause_specificity")
+            severity_score = analysis.get("severity_score")
+            confidence = analysis.get("confidence")
+            root_value = float(root_cause_specificity) if isinstance(root_cause_specificity, (int, float)) else 0.0
+            severity_value = float(severity_score) if isinstance(severity_score, (int, float)) else 0.0
+            confidence_value = float(confidence) if isinstance(confidence, (int, float)) else 0.0
+            sortable.append((item["_key"], float(score), root_value, severity_value, confidence_value))
 
-    sortable.sort(key=lambda pair: (-pair[1], pair[0]))
-    return {key: index for index, (key, _score) in enumerate(sortable, 1)}
+    sortable.sort(key=lambda pair: (-pair[1], -pair[2], -pair[3], -pair[4], pair[0]))
+    return {key: index for index, (key, _score, _root, _severity, _confidence) in enumerate(sortable, 1)}
 
 
 def write_runs_jsonl(runs_jsonl_path: str, all_run_results: List[dict]) -> None:
@@ -368,7 +580,8 @@ def write_runs_jsonl(runs_jsonl_path: str, all_run_results: List[dict]) -> None:
 def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, out_dir: str) -> dict:
     """
     針對多次 runs 做統計彙整，輸出：
-    - 每個 function 的平均風險分數
+    - 每個 function 的平均 prioritization score
+    - 平均 CVSS severity score
     - 分數標準差
     - 平均排名
     - 排名波動（stddev）
@@ -380,7 +593,19 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
     by_function: Dict[str, dict] = {
         key: {
             "record": rec,
-            "scores": [],
+            "prioritization_scores": [],
+            "severity_scores": [],
+            "root_cause_specificities": [],
+            "malformed_input_failure_modes": [],
+            "parser_state_transition_inconsistencies": [],
+            "length_state_mismatch_risks": [],
+            "parser_progress_manipulations": [],
+            "malformed_chunk_handling_paths": [],
+            "attacker_controls": [],
+            "input_validation_weaknesses": [],
+            "security_impact_likelihoods": [],
+            "evidence_strengths": [],
+            "confidences": [],
             "ranks": [],
             "risk_levels": [],
             "runs_present": [],
@@ -399,9 +624,45 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
         for item in items:
             key = item["_key"]
             analysis = item.get("analysis") or {}
-            score = analysis.get("risk_score")
-            if isinstance(score, (int, float)) and not math.isnan(score):
-                by_function[key]["scores"].append(float(score))
+            prioritization_score = analysis.get("prioritization_score")
+            if isinstance(prioritization_score, (int, float)) and not math.isnan(prioritization_score):
+                by_function[key]["prioritization_scores"].append(float(prioritization_score))
+            severity_score = analysis.get("severity_score")
+            if isinstance(severity_score, (int, float)) and not math.isnan(severity_score):
+                by_function[key]["severity_scores"].append(float(severity_score))
+            root_cause_specificity = analysis.get("root_cause_specificity")
+            if isinstance(root_cause_specificity, (int, float)) and not math.isnan(root_cause_specificity):
+                by_function[key]["root_cause_specificities"].append(float(root_cause_specificity))
+            malformed_input_failure_mode = analysis.get("malformed_input_failure_mode")
+            if isinstance(malformed_input_failure_mode, (int, float)) and not math.isnan(malformed_input_failure_mode):
+                by_function[key]["malformed_input_failure_modes"].append(float(malformed_input_failure_mode))
+            parser_state_transition_inconsistency = analysis.get("parser_state_transition_inconsistency")
+            if isinstance(parser_state_transition_inconsistency, (int, float)) and not math.isnan(parser_state_transition_inconsistency):
+                by_function[key]["parser_state_transition_inconsistencies"].append(float(parser_state_transition_inconsistency))
+            length_state_mismatch_risk = analysis.get("length_state_mismatch_risk")
+            if isinstance(length_state_mismatch_risk, (int, float)) and not math.isnan(length_state_mismatch_risk):
+                by_function[key]["length_state_mismatch_risks"].append(float(length_state_mismatch_risk))
+            parser_progress_manipulation = analysis.get("parser_progress_manipulation")
+            if isinstance(parser_progress_manipulation, (int, float)) and not math.isnan(parser_progress_manipulation):
+                by_function[key]["parser_progress_manipulations"].append(float(parser_progress_manipulation))
+            malformed_chunk_handling_path = analysis.get("malformed_chunk_handling_path")
+            if isinstance(malformed_chunk_handling_path, (int, float)) and not math.isnan(malformed_chunk_handling_path):
+                by_function[key]["malformed_chunk_handling_paths"].append(float(malformed_chunk_handling_path))
+            attacker_control = analysis.get("attacker_control")
+            if isinstance(attacker_control, (int, float)) and not math.isnan(attacker_control):
+                by_function[key]["attacker_controls"].append(float(attacker_control))
+            input_validation_weakness = analysis.get("input_validation_weakness")
+            if isinstance(input_validation_weakness, (int, float)) and not math.isnan(input_validation_weakness):
+                by_function[key]["input_validation_weaknesses"].append(float(input_validation_weakness))
+            security_impact_likelihood = analysis.get("security_impact_likelihood")
+            if isinstance(security_impact_likelihood, (int, float)) and not math.isnan(security_impact_likelihood):
+                by_function[key]["security_impact_likelihoods"].append(float(security_impact_likelihood))
+            evidence_strength = analysis.get("evidence_strength")
+            if isinstance(evidence_strength, (int, float)) and not math.isnan(evidence_strength):
+                by_function[key]["evidence_strengths"].append(float(evidence_strength))
+            confidence = analysis.get("confidence")
+            if isinstance(confidence, (int, float)) and not math.isnan(confidence):
+                by_function[key]["confidences"].append(float(confidence))
             if key in ranks:
                 by_function[key]["ranks"].append(float(ranks[key]))
             by_function[key]["risk_levels"].append(analysis.get("risk_level"))
@@ -410,8 +671,21 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
     summary_rows = []
     for key, info in by_function.items():
         rec = info["record"]
-        avg_score = mean_or_zero(info["scores"])
-        score_stdev = stdev_or_zero(info["scores"])
+        avg_priority = mean_or_zero(info["prioritization_scores"])
+        priority_stdev = stdev_or_zero(info["prioritization_scores"])
+        avg_severity = mean_or_zero(info["severity_scores"])
+        severity_stdev = stdev_or_zero(info["severity_scores"])
+        avg_root_cause_specificity = mean_or_zero(info["root_cause_specificities"])
+        avg_malformed_input_failure_mode = mean_or_zero(info["malformed_input_failure_modes"])
+        avg_parser_state_transition_inconsistency = mean_or_zero(info["parser_state_transition_inconsistencies"])
+        avg_length_state_mismatch_risk = mean_or_zero(info["length_state_mismatch_risks"])
+        avg_parser_progress_manipulation = mean_or_zero(info["parser_progress_manipulations"])
+        avg_malformed_chunk_handling_path = mean_or_zero(info["malformed_chunk_handling_paths"])
+        avg_attacker_control = mean_or_zero(info["attacker_controls"])
+        avg_input_validation_weakness = mean_or_zero(info["input_validation_weaknesses"])
+        avg_security_impact_likelihood = mean_or_zero(info["security_impact_likelihoods"])
+        avg_evidence_strength = mean_or_zero(info["evidence_strengths"])
+        avg_confidence = mean_or_zero(info["confidences"])
         avg_rank = mean_or_zero(info["ranks"])
         rank_stdev = stdev_or_zero(info["ranks"])
 
@@ -425,33 +699,63 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
                 "baseline": rec.get("_baseline"),
                 "runs_expected": runs,
                 "runs_completed": len(info["runs_present"]),
-                "average_risk_score": round_metric(avg_score),
-                "risk_score_stddev": round_metric(score_stdev),
+                "average_prioritization_score": round_metric(avg_priority),
+                "prioritization_score_stddev": round_metric(priority_stdev),
+                "average_severity_score": round_metric(avg_severity),
+                "severity_score_stddev": round_metric(severity_stdev),
+                "average_risk_score": round_metric(avg_severity),
+                "risk_score_stddev": round_metric(severity_stdev),
+                "average_root_cause_specificity": round_metric(avg_root_cause_specificity),
+                "average_malformed_input_failure_mode": round_metric(avg_malformed_input_failure_mode),
+                "average_parser_state_transition_inconsistency": round_metric(avg_parser_state_transition_inconsistency),
+                "average_length_state_mismatch_risk": round_metric(avg_length_state_mismatch_risk),
+                "average_parser_progress_manipulation": round_metric(avg_parser_progress_manipulation),
+                "average_malformed_chunk_handling_path": round_metric(avg_malformed_chunk_handling_path),
+                "average_attacker_control": round_metric(avg_attacker_control),
+                "average_input_validation_weakness": round_metric(avg_input_validation_weakness),
+                "average_security_impact_likelihood": round_metric(avg_security_impact_likelihood),
+                "average_evidence_strength": round_metric(avg_evidence_strength),
+                "average_confidence": round_metric(avg_confidence),
                 "average_rank": round_metric(avg_rank),
                 "rank_volatility": round_metric(rank_stdev),
-                "run_scores": [round_metric(v) for v in info["scores"]],
+                "run_prioritization_scores": [round_metric(v) for v in info["prioritization_scores"]],
+                "run_severity_scores": [round_metric(v) for v in info["severity_scores"]],
+                "run_scores": [round_metric(v) for v in info["severity_scores"]],
+                "run_root_cause_specificities": [round_metric(v) for v in info["root_cause_specificities"]],
+                "run_malformed_input_failure_modes": [round_metric(v) for v in info["malformed_input_failure_modes"]],
+                "run_parser_state_transition_inconsistencies": [round_metric(v) for v in info["parser_state_transition_inconsistencies"]],
+                "run_length_state_mismatch_risks": [round_metric(v) for v in info["length_state_mismatch_risks"]],
+                "run_parser_progress_manipulations": [round_metric(v) for v in info["parser_progress_manipulations"]],
+                "run_malformed_chunk_handling_paths": [round_metric(v) for v in info["malformed_chunk_handling_paths"]],
+                "run_confidences": [round_metric(v) for v in info["confidences"]],
                 "run_ranks": [round_metric(v) for v in info["ranks"]],
                 "risk_levels": info["risk_levels"],
             }
         )
 
-    # 先照平均風險分數高到低排序；若同分，再看平均排名；再同則看函式名 
+    # Ranking uses function-level prioritization first. CVSS severity is a supporting tie-breaker.
     summary_rows.sort(
         key=lambda row: (
-            -row["average_risk_score"],
+            -row["average_prioritization_score"],
+            -row["average_root_cause_specificity"],
+            -row["average_severity_score"],
+            -row["average_confidence"],
             row["average_rank"] if row["average_rank"] else float("inf"),
             row["func_name"] or "",
         )
     )
 
-    overall_avg = mean_or_zero([row["average_risk_score"] for row in summary_rows])
+    overall_avg_priority = mean_or_zero([row["average_prioritization_score"] for row in summary_rows])
+    overall_avg_severity = mean_or_zero([row["average_severity_score"] for row in summary_rows])
     overall_rank_volatility = mean_or_zero([row["rank_volatility"] for row in summary_rows])
 
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "runs": runs,
         "total_functions": len(summary_rows),
-        "overall_average_risk_score": round_metric(overall_avg),
+        "overall_average_prioritization_score": round_metric(overall_avg_priority),
+        "overall_average_severity_score": round_metric(overall_avg_severity),
+        "overall_average_risk_score": round_metric(overall_avg_severity),
         "overall_average_rank_volatility": round_metric(overall_rank_volatility),
         "functions": summary_rows,
     }
@@ -469,18 +773,23 @@ def write_baseline_summary_table(path: str, payload: dict) -> None:
         f"- Generated at: {payload['generated_at']}",
         f"- Runs: {payload['runs']}",
         f"- Total functions: {payload['total_functions']}",
-        f"- Overall average risk score: {payload['overall_average_risk_score']}",
+        f"- Overall average prioritization score: {payload['overall_average_prioritization_score']}",
+        f"- Overall average severity score: {payload['overall_average_severity_score']}",
         f"- Overall average rank volatility: {payload['overall_average_rank_volatility']}",
         "",
-        "| Rank | Function | Avg Score | Score Stddev | Avg Rank | Rank Volatility | Completed Runs |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Function | Priority | Priority Stddev | Severity | Root Cause | State Inconsist | Len/State Mismatch | Progress | Chunk Path | Malformed Failure | Evidence | Confidence | Avg Rank | Rank Volatility | Completed Runs |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for idx, row in enumerate(payload["functions"], 1):
         function_label = f"{row['func_name']} ({row['line_start']}-{row['line_end']})"
         lines.append(
-            f"| {idx} | {function_label} | {row['average_risk_score']:.4f} | "
-            f"{row['risk_score_stddev']:.4f} | {row['average_rank']:.4f} | "
+            f"| {idx} | {function_label} | {row['average_prioritization_score']:.4f} | "
+            f"{row['prioritization_score_stddev']:.4f} | {row['average_severity_score']:.4f} | "
+            f"{row['average_root_cause_specificity']:.4f} | {row['average_parser_state_transition_inconsistency']:.4f} | "
+            f"{row['average_length_state_mismatch_risk']:.4f} | {row['average_parser_progress_manipulation']:.4f} | "
+            f"{row['average_malformed_chunk_handling_path']:.4f} | {row['average_malformed_input_failure_mode']:.4f} | "
+            f"{row['average_evidence_strength']:.4f} | {row['average_confidence']:.4f} | {row['average_rank']:.4f} | "
             f"{row['rank_volatility']:.4f} | {row['runs_completed']}/{row['runs_expected']} |"
         )
 

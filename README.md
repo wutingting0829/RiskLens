@@ -38,3 +38,14 @@ python3 analyze_llm.py --in functions.jsonl --runs 5 --out-dir outputs/baseline 
   python3 analyze_llm.py --in output.jsonl --runs 5 --out-dir outputs/cve-2013-2028_baseline --score-json outputs/cve-2013-2028_baseline/summary.json
 
 ```
+
+// factor-based testing
+```
+python3 analyze_llm.py \
+  --in output.jsonl \
+  --runs 5 \
+  --out-dir outputs/factor_cvss_test \
+  --score-json outputs/factor_cvss_test/summary.json \
+  --model gpt-4o-2024-08-06
+
+```
