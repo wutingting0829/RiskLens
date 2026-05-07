@@ -312,7 +312,7 @@ def compute_cvss_result(factors: LLMFactorResult) -> RiskResult:
 
 
 # 從單次 run 的報告檔中擷取重點欄位，輸出一份較精簡的 score summary JSON。
-def write_score_json(report_path: str, score_json_path: str) -> None:
+def build_score_payload(report_path: str) -> dict:
     score_items = []
 
     for obj in read_jsonl(report_path):
@@ -368,6 +368,11 @@ def write_score_json(report_path: str, score_json_path: str) -> None:
         "average_risk_score": round(avg_severity, 2),
         "scores": score_items,
     }
+    return payload
+
+
+def write_score_json(report_path: str, score_json_path: str) -> None:
+    payload = build_score_payload(report_path)
     write_json(score_json_path, payload)
 
 # =========================
@@ -797,6 +802,120 @@ def write_baseline_summary_table(path: str, payload: dict) -> None:
         fout.write("\n".join(lines) + "\n")
 
 
+def truncate_text(value: str, max_width: int) -> str:
+    if len(value) <= max_width:
+        return value
+    if max_width <= 3:
+        return value[:max_width]
+    return value[: max_width - 3] + "..."
+
+
+def metric(value: object) -> float:
+    if isinstance(value, (int, float)) and not math.isnan(value):
+        return float(value)
+    return 0.0
+
+
+def print_single_run_rank_summary(run_results: List[dict]) -> None:
+    ranks = assign_ranks(run_results)
+    rows = []
+    for item in run_results:
+        key = item.get("_key")
+        analysis = item.get("analysis") or {}
+        if key not in ranks:
+            continue
+        rows.append(
+            {
+                "rank": ranks[key],
+                "func_name": item.get("func_name"),
+                "line_start": item.get("line_start"),
+                "line_end": item.get("line_end"),
+                "priority": metric(analysis.get("prioritization_score")),
+                "severity": metric(analysis.get("severity_score")),
+                "root": metric(analysis.get("root_cause_specificity")),
+                "state": metric(analysis.get("parser_state_transition_inconsistency")),
+                "length": metric(analysis.get("length_state_mismatch_risk")),
+                "progress": metric(analysis.get("parser_progress_manipulation")),
+                "chunk": metric(analysis.get("malformed_chunk_handling_path")),
+                "failure": metric(analysis.get("malformed_input_failure_mode")),
+                "evidence": metric(analysis.get("evidence_strength")),
+                "confidence": metric(analysis.get("confidence")),
+            }
+        )
+
+    rows.sort(key=lambda row: row["rank"])
+    if not rows:
+        print("\nFinal Ranking Summary: no functions to display.")
+        return
+
+    print("\nFinal Ranking Summary")
+    print(
+        f"{'Rank':>4}  {'Priority':>8}  {'Severity':>8}  {'Root':>6}  {'State':>6}  "
+        f"{'Len':>6}  {'Prog':>6}  {'Chunk':>6}  {'Fail':>6}  {'Evid':>6}  {'Conf':>6}  Function"
+    )
+    print(
+        f"{'-' * 4}  {'-' * 8}  {'-' * 8}  {'-' * 6}  {'-' * 6}  "
+        f"{'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 48}"
+    )
+
+    for row in rows:
+        function_label = f"{row['func_name']} ({row['line_start']}-{row['line_end']})"
+        print(
+            f"{row['rank']:>4}  {row['priority']:>8.4f}  {row['severity']:>8.4f}  "
+            f"{row['root']:>6.4f}  {row['state']:>6.4f}  {row['length']:>6.4f}  "
+            f"{row['progress']:>6.4f}  {row['chunk']:>6.4f}  {row['failure']:>6.4f}  "
+            f"{row['evidence']:>6.4f}  {row['confidence']:>6.4f}  "
+            f"{truncate_text(function_label, 48)}"
+        )
+
+
+def print_average_rank_summary(payload: dict) -> None:
+    rows = sorted(
+        payload.get("functions", []),
+        key=lambda row: (
+            row["average_rank"] if row["average_rank"] else float("inf"),
+            -row["average_prioritization_score"],
+            -row["average_root_cause_specificity"],
+            row["func_name"] or "",
+        ),
+    )
+
+    if not rows:
+        print("\nAverage Rank Summary: no functions to display.")
+        return
+
+    print("\nAverage Rank Summary (lower avg rank is better)")
+    print(
+        f"{'Rank':>4}  {'AvgRank':>7}  {'Priority':>8}  {'Severity':>8}  {'Root':>6}  "
+        f"{'State':>6}  {'Len':>6}  {'Prog':>6}  {'Chunk':>6}  {'Fail':>6}  "
+        f"{'Evid':>6}  {'Conf':>6}  {'Vol':>6}  {'Runs':>7}  Function"
+    )
+    print(
+        f"{'-' * 4}  {'-' * 7}  {'-' * 8}  {'-' * 8}  {'-' * 6}  "
+        f"{'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 6}  "
+        f"{'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 7}  {'-' * 48}"
+    )
+
+    for idx, row in enumerate(rows, 1):
+        function_label = f"{row['func_name']} ({row['line_start']}-{row['line_end']})"
+        completed_runs = f"{row['runs_completed']}/{row['runs_expected']}"
+        print(
+            f"{idx:>4}  {row['average_rank']:>7.4f}  "
+            f"{row['average_prioritization_score']:>8.4f}  "
+            f"{row['average_severity_score']:>8.4f}  "
+            f"{row['average_root_cause_specificity']:>6.4f}  "
+            f"{row['average_parser_state_transition_inconsistency']:>6.4f}  "
+            f"{row['average_length_state_mismatch_risk']:>6.4f}  "
+            f"{row['average_parser_progress_manipulation']:>6.4f}  "
+            f"{row['average_malformed_chunk_handling_path']:>6.4f}  "
+            f"{row['average_malformed_input_failure_mode']:>6.4f}  "
+            f"{row['average_evidence_strength']:>6.4f}  "
+            f"{row['average_confidence']:>6.4f}  "
+            f"{row['rank_volatility']:>6.4f}  {completed_runs:>7}  "
+            f"{truncate_text(function_label, 48)}"
+        )
+
+
 # =========================
 # 參數驗證
 # =========================
@@ -870,11 +989,15 @@ def main() -> None:
             write_score_json(out_path, args.score_json)
             print(f"Wrote score JSON: {args.score_json}")
 
+    if args.runs == 1:
+        print_single_run_rank_summary(all_run_results)
+
     # 多次 run 模式下，整合原始結果並做 summary
     if args.runs > 1:
         runs_jsonl_path = os.path.join(out_dir, "runs.jsonl")
         write_runs_jsonl(runs_jsonl_path, all_run_results)
         summary = summarize_runs(records, all_run_results, args.runs, out_dir)
+        print_average_rank_summary(summary)
         print(f"Wrote runs JSONL: {runs_jsonl_path}")
         print(f"Wrote baseline summary JSON: {os.path.join(out_dir, 'baseline_summary.json')}")
         print(f"Wrote baseline summary table: {os.path.join(out_dir, 'baseline_summary.md')}")
