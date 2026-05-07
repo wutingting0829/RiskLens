@@ -49,3 +49,97 @@ python3 analyze_llm.py \
   --model gpt-4o-2024-08-06
 
 ```
+
+// Test Case - 2019-12982
+```
+cd /home/sense/func-extractor
+
+./build/func_extractor input/cve-2019-12982.c -- \
+  -std=c11 \
+  -I/home/sense/libming/src \
+  -I/home/sense/libming/util \
+  -I/home/sense/libming/src/blocks \
+  -I/home/sense/libming/ch/include \
+  -I/home/sense/func-extractor/input \
+  -I/home/sense/miniconda3/lib/clang/16/include \
+  > input/cve-2019-12982-function.jsonl
+
+python3 analyze_llm.py \
+  --in input/cve-2019-12982-function.jsonl \
+  --runs 2 \
+  --out-dir outputs/cve-2019-12982 \
+  --score-json outputs/cve-2019-12982/summary.json \
+  --model gpt-4o-2024-08-0
+```
+
+// Test Case - 2022-34526
+```
+cd /home/sense/func-extractor
+
+./build/func_extractor input/cve-2022-34526.c -- \
+  -std=c11 \
+  -I/tmp/libtiff-cmake-for-ast/libtiff \
+  -I/tmp/libtiff-cmake-for-ast \
+  -I/home/sense/libtiff/libtiff \
+  -I/home/sense/libtiff/port \
+  -I/home/sense/libtiff/test \
+  -I/home/sense/libtiff/contrib/tags \
+  -I/home/sense/libtiff/contrib/stream \
+  -I/home/sense/libtiff/contrib/addtiffo \
+  -I/home/sense/libtiff/contrib/dbs/xtiff \
+  -I/home/sense/libtiff/contrib/pds \
+  -I/home/sense/libtiff/archive/tools \
+  -I/home/sense/miniconda3/lib/clang/16/include \
+  > input/cve-2022-34526-function.jsonl
+
+ python3 analyze_llm.py \
+  --in input/cve-2022-34526-function.jsonl \
+  --runs 5 \
+  --out-dir outputs/cve-2022-34526 \
+  --score-json outputs/cve-2022-34526/summary.json \
+  --model gpt-4o-2024-08-06
+
+```
+
+//Test Case - 2021-29338
+```
+cd /home/sense/func-extractor
+
+./build/func_extractor input/cve-2021-29338-decompress.c -- \
+  -std=c11 \
+  -I/home/sense/openjpeg/build/src/bin/common \
+  -I/home/sense/openjpeg/build/src/lib/openjp2 \
+  -I/home/sense/openjpeg/src/lib/openjp2 \
+  -I/home/sense/openjpeg/src/bin/common \
+  -I/home/sense/openjpeg/src/bin/jp2 \
+  -I/home/sense/miniconda3/lib/clang/16/include \
+  > input/cve-2021-29338-decompress-function.jsonl
+
+python3 analyze_llm.py \
+  --in input/cve-2021-29338-decompress-function.jsonl \
+  --runs 5 \
+  --out-dir outputs/cve-2021-29338-decpmpress \
+  --score-json outputs/cve-2021-29338-decompress/summary.json \
+  --model gpt-4o-2024-08-06
+
+
+cd /home/sense/func-extractor
+./build/func_extractor input/cve-2021-29338-compress.c -- \
+  -std=c11 \
+  -I/home/sense/openjpeg/build/src/bin/common \
+  -I/home/sense/openjpeg/build/src/lib/openjp2 \
+  -I/home/sense/openjpeg/src/lib/openjp2 \
+  -I/home/sense/openjpeg/src/bin/common \
+  -I/home/sense/openjpeg/src/bin/jp2 \
+  -I/home/sense/miniconda3/lib/clang/16/include \
+  > input/cve-2021-29338-compress-function.jsonl
+
+python3 analyze_llm.py \
+  --in input/cve-2021-29338-compress-function.jsonl \
+  --runs 5 \
+  --out-dir outputs/cve-2021-29338-compress \
+  --score-json outputs/cve-2021-29338-compress/summary.json \
+  --model gpt-4o-2024-08-06
+
+```
+

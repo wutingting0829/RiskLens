@@ -7,7 +7,7 @@ from .prompt_utils import (
 )
 
 PROMPT_NAME = "hybrid_root_cause_prioritization"
-PROMPT_VERSION = "hybrid_root_cause_prioritization_v7"
+PROMPT_VERSION = "hybrid_root_cause_prioritization_v9_logic_gatekeeper"
 
 SYSTEM_PROMPT = (
     "You are a senior software security expert specializing in vulnerability analysis of C code.\n\n"
@@ -57,6 +57,13 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "- Potentially attacker-controlled or malformed input must be handled safely.\n"
         "- Length, bounds, and parser state transitions should remain valid throughout execution.\n"
         "- Invalid states or malformed inputs should be rejected before unsafe memory or state updates occur.\n"
+        "- For parser/decompiler functions involving CAST, Action, SWF_ACTION, decompilation, or bytecode/property interpretation, explicitly check type-cast safety. "
+        "Treat integer-to-buffer-size casts, signed/unsigned conversions, enum/integer mismatches, narrowing or widening conversions, and Type Mismatch in Decompilation as security-relevant when attacker-controlled input can influence sizes, offsets, indexes, allocation lengths, copy lengths, or parser state.\n"
+        "- A cast is safe only when the source value has been validated against the destination type range and the downstream buffer/allocation/state invariant before the cast-dependent operation occurs.\n"
+        "- Treat parser validation gatekeeper functions as security-sensitive even when they do not directly write memory. "
+        "A gatekeeper is a function that accepts/rejects syntax, validates tags/fields/actions/properties, selects legal parser states, or decides whether downstream parsing may continue.\n"
+        "- For boolean or status-returning validation functions, explicitly consider the consequence if return 0, return 1, true, false, success, or failure is reversed, misinterpreted, or reached through an incomplete check. "
+        "If an inverted or overly-permissive decision would allow malformed input into downstream parsing, raise parser_state_influence, input_validation_weakness, malformed_input_failure_mode, and evidence_strength as appropriate.\n"
         "- High risk should only be assigned when there is concrete evidence of a plausible exploit path or likely vulnerability root cause.\n"
         "- Do not confuse 'complex parser logic' with 'actual vulnerability root cause'.\n"
     )
@@ -67,10 +74,13 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "1. Identify dangerous operations, boundary-sensitive logic, parser-state transitions, or memory-sensitive behavior.\n"
         "2. Trace whether attacker-controllable input can reach those operations or states.\n"
         "3. Check whether safety checks, bounds validation, or state invariants are missing, weak, or bypassable.\n"
-        "4. Decide whether this function is likely a true root-cause candidate, or only a similar high-risk-looking function.\n"
-        "5. Assign each CVSS Base Metric using the factor rubric below; these describe severity if the issue is real.\n"
-        "6. Assign function-level proxy factors; these describe how useful this function is for root-cause prioritization.\n"
-        "7. Treat uncertain candidates as non-zero when there is meaningful local evidence, even if CVSS severity is hard to map.\n"
+        "4. For CAST/Action/decompiler-style parser code, check whether attacker-controlled values cross type boundaries before being used as buffer sizes, allocation sizes, indexes, offsets, enum selectors, or action/property dispatch values.\n"
+        "5. Identify whether the function is a parser gatekeeper: a validation, legality check, state acceptance/rejection, dispatch filter, or action/property/tag admissibility check.\n"
+        "6. For gatekeeper functions, ask: if the return value or success/failure meaning is inverted, misread, or too permissive, what malformed input reaches later parser, allocation, copy, dispatch, or state-transition code?\n"
+        "7. Decide whether this function is likely a true root-cause candidate, or only a similar high-risk-looking function.\n"
+        "8. Assign each CVSS Base Metric using the factor rubric below; these describe severity if the issue is real.\n"
+        "9. Assign function-level proxy factors; these describe how useful this function is for root-cause prioritization.\n"
+        "10. Treat uncertain candidates as non-zero when there is meaningful local evidence, even if CVSS severity is hard to map.\n"
     )
 
     factor_rubric = (
@@ -132,8 +142,9 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "- boundary_crossing: Whether this function sits at a trust boundary, parser boundary, privilege boundary, policy boundary, command boundary, or file/path boundary.\n"
         "- input_validation_weakness: Whether validation, bounds checks, normalization, canonicalization, or state checks are missing, weak, late, inconsistent, or bypassable.\n"
         "- memory_safety_relevance: Whether the function performs pointer arithmetic, buffer writes, length-sensitive copies, allocation/free, indexing, or lifetime-sensitive operations in a security-relevant way.\n"
+        "- cast_safety_relevance: When the function involves CAST, Action, SWF_ACTION, decompilation, bytecode/property interpretation, or parser dispatch, consider whether integer-to-buffer-size casts, signed/unsigned conversions, enum/integer mismatches, narrowing/widening conversions, or Type Mismatch in Decompilation can let malformed input corrupt sizes, offsets, indexes, allocation lengths, copy lengths, or parser state. Fold this evidence into memory_safety_relevance, input_validation_weakness, parser_state_influence, length_state_mismatch_risk, malformed_input_failure_mode, and evidence_strength as appropriate.\n"
         "- command_or_path_influence: Whether the function influences command selection, argv/env construction, executable path resolution, filesystem path resolution, shell interpretation, or privileged command behavior.\n"
-        "- parser_state_influence: Whether the function controls tokenization, parser state transitions, delimiter handling, escape handling, recursive parsing, or stateful interpretation.\n"
+        "- parser_state_influence: Whether the function controls tokenization, parser state transitions, delimiter handling, escape handling, recursive parsing, stateful interpretation, or parser legality decisions. Give extra weight to validation gatekeepers whose accept/reject result determines whether malformed input reaches downstream parsing.\n"
         "- privilege_or_policy_influence: Whether the function influences authorization, privilege changes, policy enforcement, allow/deny decisions, sandboxing, or security mode selection.\n"
         "- error_handling_relevance: Whether error paths, fallback paths, partial parsing, cleanup, or rejection behavior could affect exploitability or bypass.\n"
         "- malformed_input_failure_mode: Whether malformed input can directly drive the function into the suspected vulnerable parser failure mode, such as an incorrect state transition, unsafe acceptance/rejection, delimiter confusion, normalization mismatch, out-of-bounds state, or corrupted downstream interpretation.\n"
@@ -150,6 +161,8 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "- Use 0.4-0.6 for plausible candidates with incomplete context.\n"
         "- Use 0.7-1.0 only when the function locally concentrates the suspected failure mode: parser state inconsistency, length/state mismatch, parser progress manipulation, or malformed chunk handling.\n"
         "- Parser/checker/resolver/dispatcher functions should not be boosted just for being complex; boost them only when the local logic plausibly carries this specific parser failure mode.\n"
+        "- Validation gatekeeper functions should be boosted when the local logic decides legality, admissibility, parser continuation, or action/property/tag acceptance, and a wrong return value would globally change downstream parsing behavior.\n"
+        "- For functions dominated by return 0/return 1, true/false, or success/failure branches, explicitly reason about the downstream consequence of an inverted, ambiguous, or overly-permissive decision before lowering root_cause_specificity.\n"
         "- Do not over-reward generic URI safety, validation helper, or sanitization/checker functions with attacker_control or input_validation_weakness alone. "
         "If a helper only recognizes unsafe input but does not contain the failing parser state transition or downstream security decision, keep root_cause_specificity and malformed_input_failure_mode lower.\n"
         "- A function that directly updates chunk length, consumed/remaining counters, read cursor, parser state, or message-complete state should score higher than a generic safety checker when malformed input could desynchronize those values.\n"

@@ -253,17 +253,17 @@ def compute_prioritization_score(factors: LLMFactorResult, severity_score: float
     root-cause locality and observable code proxies drive the ranking.
     """
     score = (
-        0.28 * factors.root_cause_specificity
-        + 0.16 * factors.parser_state_transition_inconsistency
-        + 0.13 * factors.length_state_mismatch_risk
-        + 0.12 * factors.parser_progress_manipulation
-        + 0.10 * factors.malformed_chunk_handling_path
+        0.25 * factors.root_cause_specificity
+        + 0.15 * factors.parser_state_transition_inconsistency
+        + 0.12 * factors.length_state_mismatch_risk
+        + 0.10 * factors.parser_progress_manipulation
+        + 0.08 * factors.malformed_chunk_handling_path
         + 0.08 * factors.malformed_input_failure_mode
-        + 0.04 * factors.parser_state_influence
-        + 0.03 * factors.security_impact_likelihood
+        + 0.10 * factors.parser_state_influence
+        + 0.04 * factors.input_validation_weakness
         + 0.02 * factors.attacker_control
-        + 0.01 * factors.input_validation_weakness
-        + 0.02 * factors.evidence_strength
+        + 0.02 * factors.security_impact_likelihood
+        + 0.03 * factors.evidence_strength
         + 0.01 * (severity_score / 10.0)
     )
     return round_metric(clamp01(score))
