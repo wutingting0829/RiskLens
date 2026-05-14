@@ -41,7 +41,9 @@ public:
     bool VisitFunctionDecl(FunctionDecl *FD){
         //只印出有實作內容 (Body) 的函數定義，忽略單純的 Header 宣告
         if(!FD) return true;
-        if(!FD->hasBody()) return true; //只要「有 body」的 function（排除純宣告）
+        if(!FD->isThisDeclarationADefinition()) return true; // 排除 forward declaration/redeclaration
+        Stmt *Body = FD->getBody();
+        if(!Body) return true; //只要「有 body」的 function（排除純宣告）
 
         const SourceManager &SM = Context->getSourceManager(); //包括主檔案和包含的檔案
         SourceLocation BeginLoc = FD->getBeginLoc(); //是否為無效位置
@@ -72,7 +74,7 @@ public:
         Info.code = CodeText;
 
         CallCollector CallVisitor(Context, &Info);
-        CallVisitor.TraverseStmt(FD->getBody());
+        CallVisitor.TraverseStmt(Body);
 
         Functions.push_back(std::move(Info));
 
@@ -108,6 +110,8 @@ public:
                    << "\"line_end\": " << Info.lineEnd << ", "
                    << "\"caller_summary\": " << buildCallerSummaryJson(Info, CallersByCallee) << ", "
                    << "\"callee_summary\": " << buildCalleeSummaryJson(Info, ByName) << ", "
+                   << "\"current_function_signals\": " << buildJsonStringArray(Info.currentFunctionSignals) << ", "
+                   << "\"cross_function_direct_evidence\": " << buildCrossFunctionDirectEvidenceJson(Info.crossFunctionDirectEvidence) << ", "
                    << "\"code\": \"" << escapeJson(Info.code) << "\""
                    << "}\n"; // JSONL 要求每筆資料最後要換行
         }
@@ -119,6 +123,16 @@ private:
         std::vector<std::string> argTexts;
     };
 
+    struct DirectEvidence {
+        std::string kind;
+        std::string lhs;
+        std::string calleeName;
+        std::string expression;
+        std::string evidenceStrength;
+        std::string explanation;
+        bool boundCheckObserved = false;
+    };
+
     struct FunctionInfo {
         std::string file;
         std::string funcName;
@@ -126,13 +140,19 @@ private:
         unsigned lineEnd = 0;
         std::string code;
         std::vector<CallInfo> calls;
+        std::vector<std::string> currentFunctionSignals;
+        std::vector<DirectEvidence> crossFunctionDirectEvidence;
     };
 
     struct CallerEdge {
         std::string funcName;
         std::string relevance;
         std::string inputOrigin;
+        std::string inputPathHint;
         std::string controlPathRole;
+        std::vector<std::string> argTexts;
+        std::vector<std::string> argumentCategories;
+        std::string relationKind = "direct_caller";
         int relevanceScore = 0;
     };
 
@@ -140,7 +160,16 @@ private:
         std::string funcName;
         std::string relevance;
         std::string roleHint;
+        std::vector<std::string> argTexts;
+        std::vector<std::string> argumentCategories;
         std::vector<std::string> dangerSignals;
+        std::vector<std::string> localSignals;
+        std::string evidenceScope = "downstream_only";
+        bool isCurrentFunctionEvidence = false;
+        bool isDownstreamEvidence = true;
+        int argumentFlowScore = 0;
+        int roleMatchScore = 0;
+        int dangerSignalScore = 0;
         int relevanceScore = 0;
     };
 
@@ -172,9 +201,116 @@ private:
             return true;
         }
 
+        bool VisitBinaryOperator(BinaryOperator *BO) {
+            if (!BO || !Info) return true;
+            std::string LHS = getExprText(BO->getLHS(), Context->getSourceManager(), Context->getLangOpts());
+            std::string RHS = getExprText(BO->getRHS(), Context->getSourceManager(), Context->getLangOpts());
+            if (!assignmentUsesCallReturn(BO, LHS, RHS)) return true;
+
+            std::string Op = BO->getOpcodeStr().str();
+            if (LHS.empty() || RHS.empty()) return true;
+
+            std::string CalleeName = getFirstCalleeName(BO->getRHS(), Context);
+            std::string Expression = LHS + " " + Op + " " + RHS;
+            std::string Signal = "unchecked callee return controls loop progress: " + Expression;
+            Info->currentFunctionSignals.push_back(Signal);
+            Info->currentFunctionSignals = uniqueStrings(Info->currentFunctionSignals);
+
+            DirectEvidence Evidence;
+            Evidence.kind = "unchecked_callee_return_controls_loop_progress";
+            Evidence.lhs = LHS;
+            Evidence.calleeName = CalleeName.empty() ? "unknown" : CalleeName;
+            Evidence.expression = Expression;
+            Evidence.evidenceStrength = "strong";
+            Evidence.explanation =
+                "The current function updates its own loop/index/progress variable using a callee return value without an observed local bounds/progress check. "
+                "This is direct evidence for the current function because parser traversal/progress control occurs in the current function body.";
+            Evidence.boundCheckObserved = false;
+
+            bool Seen = false;
+            for (const auto &Existing : Info->crossFunctionDirectEvidence) {
+                if (Existing.kind == Evidence.kind && Existing.expression == Evidence.expression) {
+                    Seen = true;
+                    break;
+                }
+            }
+            if (!Seen) Info->crossFunctionDirectEvidence.push_back(Evidence);
+            return true;
+        }
+
     private:
         ASTContext *Context;
         FunctionInfo *Info;
+
+        class CallPresenceVisitor : public RecursiveASTVisitor<CallPresenceVisitor> {
+        public:
+            bool found = false;
+
+            bool VisitCallExpr(CallExpr *CE) {
+                if (CE) found = true;
+                return false;
+            }
+        };
+
+        static bool subtreeContainsCall(Stmt *S) {
+            if (!S) return false;
+            CallPresenceVisitor Visitor;
+            Visitor.TraverseStmt(S);
+            return Visitor.found;
+        }
+
+        class FirstCallNameVisitor : public RecursiveASTVisitor<FirstCallNameVisitor> {
+        public:
+            explicit FirstCallNameVisitor(ASTContext *Context) : Context(Context) {}
+
+            bool VisitCallExpr(CallExpr *CE) {
+                if (!CE || !calleeName.empty()) return false;
+
+                if (FunctionDecl *FD = CE->getDirectCallee()) {
+                    calleeName = FD->getNameInfo().getName().getAsString();
+                } else if (Context) {
+                    calleeName = getExprText(CE->getCallee(), Context->getSourceManager(), Context->getLangOpts());
+                }
+                return false;
+            }
+
+            std::string calleeName;
+
+        private:
+            ASTContext *Context;
+        };
+
+        static std::string getFirstCalleeName(Stmt *S, ASTContext *Context) {
+            if (!S || !Context) return "";
+            FirstCallNameVisitor Visitor(Context);
+            Visitor.TraverseStmt(S);
+            return Visitor.calleeName;
+        }
+
+        static bool looksLikeProgressVariable(const std::string &LHS, const std::string &RHS) {
+            std::string Name = lowerCopy(LHS);
+            std::string Right = lowerCopy(RHS);
+            if (containsAny(Name, {"cursor", "pos", "position", "idx", "index", "offset", "off", "read", "consume", "consumed", "remain", "remaining", "progress", "nread"})) {
+                return true;
+            }
+            if ((Name == "i" || Name == "j" || Name == "k" || Name == "n") && Right.find(Name) != std::string::npos) {
+                return true;
+            }
+            return false;
+        }
+
+        static bool assignmentUsesCallReturn(BinaryOperator *BO, const std::string &LHS, const std::string &RHS) {
+            if (!BO) return false;
+
+            BinaryOperatorKind Opcode = BO->getOpcode();
+            if (Opcode == BO_AddAssign || Opcode == BO_SubAssign) {
+                return subtreeContainsCall(BO->getRHS());
+            }
+
+            return Opcode == BO_Assign
+                && subtreeContainsCall(BO->getRHS())
+                && looksLikeProgressVariable(LHS, RHS);
+        }
     };
 
     //JSON 跳脫函式
@@ -250,16 +386,29 @@ private:
     static std::string classifyInputOrigin(const std::vector<std::string> &ArgTexts) {
         std::string Combined = lowerCopy(joinStrings(ArgTexts, " "));
         if (containsAny(Combined, {"request", "req", "http", "uri", "header", "body", "socket", "recv", "read", "packet", "buf", "buffer", "data", "input", "chunk"})) {
-            return "likely external input";
+            return "syntactic input-like argument";
         }
         if (containsAny(Combined, {"parser", "parse", "token", "cursor", "offset", "pos", "len", "length", "size", "tag", "action", "field", "state"})) {
             return "parser path or derived parser state";
         }
         if (containsAny(Combined, {"argv", "env", "user", "file", "path", "stdin", "malicious", "tainted"})) {
-            return "likely user-controlled data";
+            return "syntactic user/file-like argument";
         }
         if (ArgTexts.empty()) return "no call arguments";
         return "unclear from call arguments";
+    }
+
+    static std::string neutralInputOriginHint(const std::string &InputOrigin) {
+        if (InputOrigin == "syntactic input-like argument" || InputOrigin == "syntactic user/file-like argument") {
+            return "syntactic input-like argument detected";
+        }
+        if (InputOrigin == "parser path or derived parser state") {
+            return "parser-derived argument pattern detected";
+        }
+        if (InputOrigin == "no call arguments") {
+            return "no call arguments";
+        }
+        return "unclear from syntax";
     }
 
     static std::string summarizeCallerRelevance(const std::vector<std::string> &ArgTexts, const std::string &InputOrigin) {
@@ -277,17 +426,40 @@ private:
         return "passes " + joinStrings(uniqueStrings(Details), ", ") + " into current function";
     }
 
+    static std::vector<std::string> classifyArgumentCategories(const std::vector<std::string> &ArgTexts) {
+        std::string Combined = lowerCopy(joinStrings(ArgTexts, " "));
+        std::vector<std::string> Categories;
+        if (ArgTexts.empty()) Categories.push_back("no arguments");
+        if (containsAny(Combined, {"dc", "ctx", "context", "state", "parser"})) Categories.push_back("parser state");
+        if (containsAny(Combined, {"act", "action", "tag", "field", "opcode", "bytecode", "data", "chunk"})) Categories.push_back("action data");
+        if (containsAny(Combined, {"len", "length", "size", "count", "max", "remain", "remaining"})) Categories.push_back("length-like value");
+        if (containsAny(Combined, {"off", "offset", "pos", "position", "cursor", "idx", "index"})) Categories.push_back("offset/progress value");
+        if (containsAny(Combined, {"buf", "buffer", "ptr", "pointer", "dst", "dest", "src"})) Categories.push_back("buffer/pointer");
+        if (Categories.empty()) Categories.push_back("unclear from syntax");
+        return uniqueStrings(Categories);
+    }
+
     static bool callerNameLooksRelevant(const std::string &FuncName) {
         std::string Name = lowerCopy(FuncName);
         return containsAny(Name, {"parser", "parse", "read", "decode", "load", "handle", "process", "scan", "check", "validate", "dispatch", "main"});
     }
 
-    static bool callerLooksLikeExternalEntry(const FunctionInfo &Caller) {
-        std::string NameAndCode = lowerCopy(Caller.funcName + " " + Caller.code);
-        return containsAny(NameAndCode, {
-            "main", "argv", "argc", "stdin", "fread", "read(", "recv", "socket",
-            "request", "http", "uri", "file", "input", "load", "parse"
-        });
+    static bool callerNameLooksLikeEntry(const std::string &FuncName) {
+        std::string Name = lowerCopy(FuncName);
+        return containsAny(Name, {"main", "read", "recv", "request", "handle_request", "entry"});
+    }
+
+    static bool callerNameLooksParserLike(const std::string &FuncName) {
+        std::string Name = lowerCopy(FuncName);
+        return containsAny(Name, {"parser", "parse", "decompile", "decode", "load", "scan", "check", "validate", "dispatch"});
+    }
+
+    static bool argsLookInputLike(const std::string &Args) {
+        return containsAny(Args, {"buf", "buffer", "data", "input", "chunk", "packet", "file", "argv", "env", "user", "request", "stdin"});
+    }
+
+    static bool argsLookStructuredParserLike(const std::string &Args) {
+        return containsAny(Args, {"state", "ctx", "context", "parser", "action", "tag", "field", "opcode", "len", "length", "size", "offset", "cursor"});
     }
 
     static int scoreCallerRelevance(const FunctionInfo &Caller, const CallInfo &Call, const std::string &InputOrigin) {
@@ -298,16 +470,28 @@ private:
         if (containsAny(Args, {"off", "offset", "pos", "position", "cursor", "idx", "index"})) Score += 3;
         if (containsAny(Args, {"state", "ctx", "context", "parser"})) Score += 3;
         if (callerNameLooksRelevant(Caller.funcName)) Score += 2;
-        if (callerLooksLikeExternalEntry(Caller)) Score += 2;
-        if (InputOrigin == "likely external input" || InputOrigin == "likely user-controlled data") Score += 2;
+        if (callerNameLooksLikeEntry(Caller.funcName) && argsLookInputLike(Args)) Score += 2;
+        if (InputOrigin == "syntactic input-like argument" || InputOrigin == "syntactic user/file-like argument") Score += 2;
         if (InputOrigin == "parser path or derived parser state") Score += 1;
         return Score;
     }
 
+    static std::string classifyInputPathHint(const FunctionInfo &Caller, const CallInfo &Call, const std::string &InputOrigin) {
+        std::string Args = lowerCopy(joinStrings(Call.argTexts, " "));
+        bool HasInputArgs = argsLookInputLike(Args);
+        bool HasParserArgs = argsLookStructuredParserLike(Args);
+        bool EntryName = callerNameLooksLikeEntry(Caller.funcName);
+        bool ParserName = callerNameLooksParserLike(Caller.funcName);
+
+        if (EntryName && HasInputArgs) return "strong";
+        if (ParserName && (HasInputArgs || HasParserArgs)) return "medium";
+        return "weak";
+    }
+
     static std::string summarizeControlPathRole(const FunctionInfo &Caller, const CallInfo &Call, int RelevanceScore) {
         std::string Args = lowerCopy(joinStrings(Call.argTexts, " "));
-        if (callerLooksLikeExternalEntry(Caller)) {
-            return "close to an external-input entry or parser entry path";
+        if (callerNameLooksLikeEntry(Caller.funcName) && argsLookInputLike(Args)) {
+            return "entry-like caller with input-like arguments";
         }
         if (callerNameLooksRelevant(Caller.funcName) || containsAny(Args, {"state", "ctx", "parser", "offset", "cursor", "len", "length"})) {
             return "on the upstream parser/control path";
@@ -322,6 +506,9 @@ private:
         CallerEdge Edge;
         Edge.funcName = Caller.funcName;
         Edge.inputOrigin = classifyInputOrigin(Call.argTexts);
+        Edge.inputPathHint = classifyInputPathHint(Caller, Call, Edge.inputOrigin);
+        Edge.argTexts = Call.argTexts;
+        Edge.argumentCategories = classifyArgumentCategories(Call.argTexts);
         Edge.relevance = summarizeCallerRelevance(Call.argTexts, Edge.inputOrigin);
         Edge.relevanceScore = scoreCallerRelevance(Caller, Call, Edge.inputOrigin);
         Edge.controlPathRole = summarizeControlPathRole(Caller, Call, Edge.relevanceScore);
@@ -353,7 +540,7 @@ private:
     }
 
     static std::string summarizeCalleeRelevance(const std::vector<std::string> &Signals) {
-        if (Signals.empty()) return "has no obvious MVP danger signal";
+        if (Signals.empty()) return "has no obvious local signal";
         return "performs " + joinStrings(Signals, ", ");
     }
 
@@ -368,16 +555,78 @@ private:
         return "direct helper";
     }
 
-    static int scoreCalleeRelevance(const std::vector<std::string> &Signals) {
+    static int scoreCalleeDangerSignals(const std::vector<std::string> &Signals) {
         int Score = 0;
         for (const auto &Signal : Signals) {
-            if (Signal == "memory copy" || Signal == "buffer write") Score += 4;
-            else if (Signal == "allocation" || Signal == "string handling" || Signal == "stack manipulation") Score += 3;
-            else if (Signal == "parser state update" || Signal == "length/remaining/consumed update" || Signal == "parser progress update") Score += 3;
-            else if (Signal == "type conversion/cast" || Signal == "validation logic" || Signal == "length-dependent operation") Score += 2;
-            else Score += 1;
+            if (Signal == "memory copy" || Signal == "buffer write") Score += 2;
+            else if (Signal == "allocation" || Signal == "string handling" || Signal == "stack manipulation") Score += 1;
+            else if (Signal == "parser state update" || Signal == "length/remaining/consumed update" || Signal == "parser progress update") Score += 1;
+            else if (Signal == "type conversion/cast" || Signal == "validation logic" || Signal == "length-dependent operation") Score += 1;
+        }
+        return std::min(Score, 2);
+    }
+
+    static int scoreCalleeArgumentFlow(const std::vector<std::string> &Categories) {
+        int Score = 0;
+        for (const auto &Category : Categories) {
+            if (Category == "buffer/pointer") Score += 4;
+            else if (Category == "length-like value") Score += 4;
+            else if (Category == "parser state") Score += 3;
+            else if (Category == "action data") Score += 3;
+            else if (Category == "offset/progress value") Score += 3;
         }
         return Score;
+    }
+
+    static int scoreCalleeRoleMatch(
+        const std::string &FuncName,
+        const std::vector<std::string> &Categories,
+        const std::vector<std::string> &Signals
+    ) {
+        std::string Name = lowerCopy(FuncName);
+        std::string CategoryText = lowerCopy(joinStrings(Categories, " "));
+        std::string SignalText = lowerCopy(joinStrings(Signals, " "));
+        int Score = 0;
+
+        if (
+            containsAny(CategoryText, {"buffer", "pointer"})
+            && (containsAny(SignalText, {"memory copy", "buffer write", "string handling"}) || containsAny(Name, {"copy", "str", "mem", "put", "write"}))
+        ) {
+            Score += 3;
+        }
+        if (
+            containsAny(CategoryText, {"length-like"})
+            && (containsAny(SignalText, {"length", "remaining", "consumed"}) || containsAny(Name, {"len", "length", "size", "count", "strlen"}))
+        ) {
+            Score += 3;
+        }
+        if (
+            containsAny(CategoryText, {"parser state", "offset", "progress"})
+            && (containsAny(SignalText, {"parser state", "parser progress", "validation", "type conversion"}) || containsAny(Name, {"parse", "decompile", "read", "next", "advance", "state"}))
+        ) {
+            Score += 3;
+        }
+        if (
+            containsAny(CategoryText, {"action data"})
+            && (containsAny(SignalText, {"parser state", "validation", "type conversion", "string handling"}) || containsAny(Name, {"action", "tag", "field", "opcode", "get"}))
+        ) {
+            Score += 3;
+        }
+
+        return std::min(Score, 6);
+    }
+
+    static std::vector<std::string> neutralizeCalleeSignals(const std::vector<std::string> &Signals) {
+        std::vector<std::string> Neutral;
+        for (const auto &Signal : Signals) {
+            if (Signal == "memory copy" || Signal == "buffer write") Neutral.push_back("memory/buffer operation");
+            else if (Signal == "length-dependent operation" || Signal == "length/remaining/consumed update") Neutral.push_back("length-related logic");
+            else if (Signal == "parser state update") Neutral.push_back("parser state logic");
+            else if (Signal == "parser progress update") Neutral.push_back("parser progress logic");
+            else if (Signal == "stack manipulation") Neutral.push_back("stack operation");
+            else Neutral.push_back(Signal);
+        }
+        return uniqueStrings(Neutral);
     }
 
     static CalleeEdge buildCalleeEdge(const CallInfo &Call, const std::map<std::string, FunctionInfo *> &ByName) {
@@ -387,10 +636,16 @@ private:
 
         CalleeEdge Edge;
         Edge.funcName = Call.calleeName;
+        Edge.argTexts = Call.argTexts;
+        Edge.argumentCategories = classifyArgumentCategories(Call.argTexts);
         Edge.dangerSignals = Signals;
+        Edge.localSignals = neutralizeCalleeSignals(Signals);
         Edge.relevance = summarizeCalleeRelevance(Signals);
         Edge.roleHint = summarizeCalleeRoleHint(Signals);
-        Edge.relevanceScore = scoreCalleeRelevance(Signals);
+        Edge.argumentFlowScore = scoreCalleeArgumentFlow(Edge.argumentCategories);
+        Edge.roleMatchScore = scoreCalleeRoleMatch(Edge.funcName, Edge.argumentCategories, Signals);
+        Edge.dangerSignalScore = scoreCalleeDangerSignals(Signals);
+        Edge.relevanceScore = Edge.argumentFlowScore + Edge.roleMatchScore + Edge.dangerSignalScore;
         return Edge;
     }
 
@@ -400,7 +655,10 @@ private:
             if (Edge.relevanceScore > 0) Ranked.push_back(Edge);
         }
         std::stable_sort(Ranked.begin(), Ranked.end(), [](const CalleeEdge &A, const CalleeEdge &B) {
-            return A.relevanceScore > B.relevanceScore;
+            if (A.relevanceScore != B.relevanceScore) return A.relevanceScore > B.relevanceScore;
+            if (A.argumentFlowScore != B.argumentFlowScore) return A.argumentFlowScore > B.argumentFlowScore;
+            if (A.roleMatchScore != B.roleMatchScore) return A.roleMatchScore > B.roleMatchScore;
+            return A.dangerSignalScore < B.dangerSignalScore;
         });
         if (Ranked.size() > 2) Ranked.resize(2);
         return Ranked;
@@ -409,23 +667,20 @@ private:
     static std::vector<std::string> buildCalleeSummaryLines(const std::vector<CalleeEdge> &TopEdges) {
         std::vector<std::string> Lines;
         if (TopEdges.empty()) {
-            Lines.push_back("No risk-relevant direct callee was selected for this function.");
-            Lines.push_back("No downstream helper risk is visible from direct calls.");
+            Lines.push_back("No direct callee with local signals was selected for this function.");
+            Lines.push_back("Note: callee signals are downstream evidence only unless the callee return value controls current-function progress.");
             return Lines;
         }
 
-        const CalleeEdge &Top = TopEdges.front();
-        Lines.push_back("Top callee: " + Top.funcName + " (" + Top.roleHint + "); relevance: " + Top.relevance + ".");
-        if (TopEdges.size() > 1) {
-            std::vector<std::string> OtherNames;
-            for (size_t I = 1; I < TopEdges.size(); ++I) OtherNames.push_back(TopEdges[I].funcName);
-            Lines.push_back("Other selected callee: " + joinStrings(OtherNames, ", ") + ".");
+        for (const auto &Edge : TopEdges) {
+            std::string Args = Edge.argTexts.empty() ? "none" : joinStrings(Edge.argTexts, ", ");
+            std::string Categories = Edge.argumentCategories.empty() ? "unclear from syntax" : joinStrings(Edge.argumentCategories, ", ");
+            std::string Signals = Edge.localSignals.empty() ? "none observed" : joinStrings(Edge.localSignals, ", ");
+            Lines.push_back("Calls " + Edge.funcName + " with arguments: " + Args + ".");
+            Lines.push_back("Passed argument categories: " + Categories + ".");
+            Lines.push_back("Callee has local signals: " + Signals + ".");
         }
-        if (!Top.dangerSignals.empty()) {
-            Lines.push_back("Downstream risk signals: " + joinStrings(Top.dangerSignals, ", ") + ".");
-        } else {
-            Lines.push_back("No obvious dangerous downstream primitive was detected in the top callee.");
-        }
+        Lines.push_back("Note: callee signals are downstream evidence only unless the callee return value controls current-function progress.");
         return Lines;
     }
 
@@ -437,6 +692,47 @@ private:
             OS << "\"" << escapeJson(Values[I]) << "\"";
         }
         OS << "]";
+        return OS.str();
+    }
+
+    static std::string buildCrossFunctionDirectEvidenceJson(const std::vector<DirectEvidence> &EvidenceList) {
+        std::vector<std::string> Lines;
+
+        if (EvidenceList.empty()) {
+            Lines.push_back("No cross-function direct evidence was detected in the current function body.");
+        } else {
+            for (const auto &Evidence : EvidenceList) {
+                Lines.push_back(
+                    "Current function updates " + Evidence.lhs +
+                    " using return value from " + Evidence.calleeName +
+                    "; treat this as direct current-function evidence, not merely callee supporting evidence."
+                );
+                Lines.push_back(
+                    "Pattern: callee return value -> current loop/index/progress variable -> next traversal step."
+                );
+            }
+        }
+
+        std::ostringstream OS;
+        OS << "{\"summary_lines\": " << buildJsonStringArray(Lines)
+           << ", \"patterns\": [";
+
+        for (size_t I = 0; I < EvidenceList.size(); ++I) {
+            if (I) OS << ", ";
+            const auto &Evidence = EvidenceList[I];
+            OS << "{"
+               << "\"kind\": \"" << escapeJson(Evidence.kind) << "\", "
+               << "\"lhs\": \"" << escapeJson(Evidence.lhs) << "\", "
+               << "\"callee\": \"" << escapeJson(Evidence.calleeName) << "\", "
+               << "\"expression\": \"" << escapeJson(Evidence.expression) << "\", "
+               << "\"bound_check_observed\": " << (Evidence.boundCheckObserved ? "true" : "false") << ", "
+               << "\"evidence_strength\": \"" << escapeJson(Evidence.evidenceStrength) << "\", "
+               << "\"explanation\": \"" << escapeJson(Evidence.explanation) << "\", "
+               << "\"ranking_effect\": \"may increase root_cause_specificity, state_or_length_consistency_risk, and failure_trigger_likelihood when the update can desynchronize traversal\""
+               << "}";
+        }
+
+        OS << "]}";
         return OS.str();
     }
 
@@ -453,7 +749,10 @@ private:
         if (TopEdges.empty()) return "No direct caller was found for this function in the current translation unit.";
 
         const CallerEdge &Top = TopEdges.front();
-        std::string Line = "Top caller: " + Top.funcName + " (" + Top.controlPathRole + "); relevance: " + Top.relevance + ".";
+        std::string Args = Top.argTexts.empty() ? "none" : joinStrings(Top.argTexts, ", ");
+        std::string Categories = Top.argumentCategories.empty() ? "unclear from syntax" : joinStrings(Top.argumentCategories, ", ");
+        std::string Line = "Caller relation: " + Top.funcName + " calls current function with arguments: " + Args + ".";
+        Line += " Passed argument categories: " + Categories + ".";
         if (TopEdges.size() > 1) {
             std::vector<std::string> OtherNames;
             for (size_t I = 1; I < TopEdges.size(); ++I) OtherNames.push_back(TopEdges[I].funcName);
@@ -473,12 +772,8 @@ private:
         }
 
         const CallerEdge &Top = TopEdges.front();
-        if (Top.inputOrigin == "unclear from call arguments" || Top.inputOrigin == "no call arguments") {
-            Lines.push_back("Input origin is unclear from direct call arguments.");
-        } else {
-            Lines.push_back("Input origin: " + Top.inputOrigin + ".");
-        }
-        Lines.push_back("Caller question: this function appears reachable through " + Top.controlPathRole + ".");
+        Lines.push_back("Input path evidence level: " + Top.inputPathHint + ".");
+        Lines.push_back("Note: caller context is upstream relation evidence only, not direct evidence for the current function body.");
         return Lines;
     }
 
@@ -500,8 +795,13 @@ private:
             OS << "{"
                << "\"func_name\": \"" << escapeJson(TopEdges[I].funcName) << "\", "
                << "\"role_hint\": \"" << escapeJson(TopEdges[I].controlPathRole) << "\", "
+               << "\"relation_kind\": \"" << escapeJson(TopEdges[I].relationKind) << "\", "
                << "\"relevance\": \"" << escapeJson(TopEdges[I].relevance) << "\", "
-               << "\"input_hint\": \"" << escapeJson(TopEdges[I].inputOrigin) << "\", "
+               << "\"arg_texts\": " << buildJsonStringArray(TopEdges[I].argTexts) << ", "
+               << "\"argument_categories\": " << buildJsonStringArray(TopEdges[I].argumentCategories) << ", "
+               << "\"input_path_hint\": \"" << escapeJson(TopEdges[I].inputPathHint) << "\", "
+               << "\"input_path_evidence\": \"" << escapeJson(TopEdges[I].inputPathHint) << "\", "
+               << "\"input_origin_hint\": \"" << escapeJson(neutralInputOriginHint(TopEdges[I].inputOrigin)) << "\", "
                << "\"relevance_score\": " << TopEdges[I].relevanceScore
                << "}";
         }
@@ -533,7 +833,16 @@ private:
                << "\"func_name\": \"" << escapeJson(TopEdges[I].funcName) << "\", "
                << "\"role_hint\": \"" << escapeJson(TopEdges[I].roleHint) << "\", "
                << "\"relevance\": \"" << escapeJson(TopEdges[I].relevance) << "\", "
-               << "\"danger_hint\": " << buildJsonStringArray(TopEdges[I].dangerSignals) << ", "
+               << "\"arg_texts\": " << buildJsonStringArray(TopEdges[I].argTexts) << ", "
+               << "\"argument_categories\": " << buildJsonStringArray(TopEdges[I].argumentCategories) << ", "
+               << "\"local_signals\": " << buildJsonStringArray(TopEdges[I].localSignals) << ", "
+               << "\"evidence_scope\": \"" << escapeJson(TopEdges[I].evidenceScope) << "\", "
+               << "\"is_current_function_evidence\": " << (TopEdges[I].isCurrentFunctionEvidence ? "true" : "false") << ", "
+               << "\"is_downstream_evidence\": " << (TopEdges[I].isDownstreamEvidence ? "true" : "false") << ", "
+               << "\"downstream_signal_hint\": " << buildJsonStringArray(TopEdges[I].dangerSignals) << ", "
+               << "\"argument_flow_score\": " << TopEdges[I].argumentFlowScore << ", "
+               << "\"role_match_score\": " << TopEdges[I].roleMatchScore << ", "
+               << "\"local_signal_score\": " << TopEdges[I].dangerSignalScore << ", "
                << "\"relevance_score\": " << TopEdges[I].relevanceScore
                << "}";
         }

@@ -77,6 +77,7 @@ def build_case_type_addons(rec: dict) -> str:
             "Apply this addon only for SWF, bytecode, action dispatch, or decompiler-style cases.\n"
             "- Check type-cast safety, signed/unsigned conversion, enum/integer mismatch, narrowing/widening conversion, opcode/action dispatch, stack effects, and Type Mismatch in Decompilation.\n"
             "- A cast or decoded action is risky when attacker-controlled bytes can influence sizes, offsets, indexes, allocation lengths, copy lengths, emitted output, or parser/decompiler state before adequate validation.\n"
+            "- Pay special attention to loops where a helper return value updates the action index, bytecode cursor, read position, or parser progress. If malformed input can make that return value wrong, this may be root-cause evidence rather than generic dispatch complexity.\n"
             "- Do not reward generic decompiler complexity; reward only evidence tied to unsafe interpretation, dispatch, stack/data-structure state, or malformed bytecode/action handling.\n"
         )
 
@@ -113,6 +114,8 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "Functions that make semantic validation or accept/reject decisions may be the actual root cause even if they contain fewer direct memory-manipulation operations.\n"
         "- For boolean or status-returning validation functions, explicitly consider the consequence if return 0, return 1, true, false, success, or failure is reversed, misinterpreted, or reached through an incomplete check. "
         "If an inverted or overly-permissive decision would allow malformed input into downstream processing, raise validation_or_gatekeeping_weakness, state_or_length_consistency_risk, failure_trigger_likelihood, and evidence_strength as appropriate.\n"
+        "- If the current function uses a callee return value to update a loop index, parser cursor, read position, consumed/remaining length, offset, or progress state, treat that as direct current-function evidence. "
+        "When malformed input can make the callee return an incorrect progress amount, raise root_cause_specificity, state_or_length_consistency_risk, and failure_trigger_likelihood as appropriate.\n"
         "- High risk should only be assigned when there is concrete evidence of a plausible exploit path or likely vulnerability root cause.\n"
         "- Do not confuse 'complex parser logic' with 'actual vulnerability root cause'.\n"
     )
@@ -126,6 +129,16 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "- Do not lower the current function's root-cause relevance merely because a downstream helper contains a more obvious dangerous primitive; a gatekeeper/validation function can still be the root cause if its accept/reject decision controls whether malformed input reaches that helper.\n"
         "- Raise a factor only when the call context and the current function code together support a concrete data/control-flow link to unsafe parsing, state, length, memory, validation, command, or policy behavior.\n"
         "- If caller/callee context is vague, missing, or only shows generic helper calls, treat it as weak evidence and keep confidence appropriately conservative.\n"
+        "\n[DIRECT CROSS-FUNCTION EVIDENCE RULE]\n"
+        "Callee context is normally supporting evidence only.\n"
+        "- However, if the current function uses a callee return value to update its own loop index, cursor, offset, consumed length, remaining length, or parser state, evaluate that evidence as current-function direct evidence because the traversal/progress decision occurs in the current function body.\n"
+        "- This does not automatically imply high risk.\n"
+        "- Increase progress/state/root-cause factors only when: "
+        "1) the updated variable affects subsequent traversal, loop continuation, parser state, index movement, or boundary-sensitive control flow; "
+        "2) the current function lacks an explicit local check on the callee return value or on the updated progress variable; and "
+        "3) the incorrect progress value could skip, repeat, desynchronize, or move parsing outside the expected range.\n"
+        "- If explicit bounds checks or error handling are present, treat the pattern as normal parser control logic and do not increase the score substantially.\n"
+        "- Keep ordinary callee-only facts as supporting evidence: helper-local memcpy, malloc, buffer write, or allocation should not directly raise current-function root_cause_specificity unless the current function controls whether or how that helper result advances traversal/state.\n"
     )
 
     reasoning = (
@@ -138,6 +151,7 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "5. Identify whether the function is a gatekeeper: a validation, legality check, state acceptance/rejection, dispatch filter, or semantic admissibility check.\n"
         "6. For gatekeeper functions, ask: if the return value or success/failure meaning is inverted, misread, or too permissive, what malformed input reaches later allocation, copy, dispatch, state-transition, command, policy, or data-structure code?\n"
         "6a. For semantic policy checks, ask whether this function makes the core legal/illegal or accept/reject decision even when the direct dangerous primitive happens later.\n"
+        "6b. For progress-updating wrappers, ask whether callee return values are added to or assigned into loop indexes, offsets, cursors, or consumed/remaining counters; if so, malformed return values can desynchronize traversal and should increase root_cause_specificity, state_or_length_consistency_risk, and failure_trigger_likelihood.\n"
         "7. Decide whether this function is likely a true root-cause candidate, or only a similar high-risk-looking function.\n"
         "8. Assign each CVSS Base Metric using the factor rubric below; these describe severity if the issue is real.\n"
         "8a. Before selecting C/I/A, perform an impact consistency check: if your proxy factors indicate plausible root-cause evidence, explain why impact is truly absent before selecting C:N/I:N/A:N.\n"
@@ -218,6 +232,10 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "- failure_trigger_likelihood: Whether malformed input can plausibly trigger the suspected failure mode through this function, including unsafe acceptance/rejection or malformed structured input handling.\n"
         "- memory_or_data_structure_relevance: Whether the function directly or structurally relates to memory, buffers, allocation/free, indexing, stack/data-structure manipulation, type conversion, or dangerous downstream helper use.\n"
         "- evidence_strength: How strong the local function-level evidence is, independent of how severe the final vulnerability might be.\n\n"
+        "Conceptual proxy: progress_control_risk should be folded into root_cause_specificity, state_or_length_consistency_risk, and failure_trigger_likelihood. "
+        "It is high when the current function controls parser traversal, loop progress, cursor/index movement, consumed/remaining length, or state transition using values derived from helper calls or untrusted input. "
+        "For unchecked_callee_return_controls_loop_progress, evaluate progress_control_risk conditionally: raise it when the unchecked value can affect subsequent traversal and plausibly skip, repeat, desynchronize, or move parsing outside the expected range. "
+        "It is low when a helper return value is only checked for error, does not affect traversal/progress/state, or the progress update is constant and locally bounded.\n\n"
 
         "Important calibration:\n"
         "- Do not give 0.0 merely because the full call context is missing.\n"
@@ -233,6 +251,9 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "- Do not over-reward generic URI safety, validation helper, or sanitization/checker functions with input_reachability or validation_or_gatekeeping_weakness alone. "
         "If a helper only recognizes unsafe input but does not contain the failing parser state transition or downstream security decision, keep root_cause_specificity and failure_trigger_likelihood lower.\n"
         "- A function that directly updates consumed/remaining counters, read cursor, state, or completion flags should score higher than a generic safety checker when malformed input could desynchronize those values.\n"
+        "- A function that updates a loop index, parser cursor, read position, offset, consumed/remaining length, or progress state from a callee return value should score higher than a generic dispatcher when malformed input could make that return value skip, repeat, overrun, or desynchronize traversal. "
+        "In that case, raise root_cause_specificity, state_or_length_consistency_risk, and failure_trigger_likelihood even if the memory write or detailed parsing occurs in the callee.\n"
+        "Do not assume that the true root cause must be the function with the strongest local memory or data-manipulation primitive. Dispatcher or validation functions may be the root cause when their decision or dispatch logic controls which downstream behavior is reached.\n"
     )
 
     task = (
