@@ -262,6 +262,11 @@ def clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
+GATEKEEPER_BONUS = 0.03
+GATEKEEPER_BONUS_GATE_THRESHOLD = 0.7
+GATEKEEPER_BONUS_EVIDENCE_THRESHOLD = 0.6
+
+
 def compute_prioritization_score(factors: LLMFactorResult, severity_score: float) -> float:
     """
     Function-level ranking score. CVSS severity is only a small supporting signal;
@@ -277,6 +282,12 @@ def compute_prioritization_score(factors: LLMFactorResult, severity_score: float
         + 0.07 * factors.evidence_strength
         + 0.01 * (severity_score / 10.0)
     )
+    if (
+        factors.validation_or_gatekeeping_weakness >= GATEKEEPER_BONUS_GATE_THRESHOLD
+        and factors.evidence_strength >= GATEKEEPER_BONUS_EVIDENCE_THRESHOLD
+    ):
+        score += GATEKEEPER_BONUS
+
     return round_metric(clamp01(score))
 
 
