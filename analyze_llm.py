@@ -22,6 +22,23 @@ from prompts import (
 )
 
 DEFAULT_TEMPERATURE = 0
+IMPACT_REVIEW_PROMPT = (
+    "Impact consistency review:\n"
+    "Your previous answer selected C:N/I:N/A:N, which makes CVSS severity 0.0, "
+    "but the function-level proxy factors indicate a plausible root-cause candidate. "
+    "Re-evaluate the CVSS impact metrics only through code-grounded reasoning. "
+    "If malformed input could plausibly cause crash/DoS, choose at least A:L. "
+    "If it could corrupt parser/decompiler state, action dispatch, emitted output, or downstream interpretation, choose at least I:L. "
+    "If it could cause out-of-bounds reads or unintended disclosure, choose at least C:L. "
+    "Keep C:N/I:N/A:N only if the provided code supports no confidentiality, integrity, or availability impact. "
+    "Return ONLY the corrected JSON object matching the schema."
+)
+
+
+def model_supports_temperature(model: str) -> bool:
+    normalized = model.lower()
+    no_temperature_prefixes = ("gpt-5", "o1", "o3", "o4")
+    return not normalized.startswith(no_temperature_prefixes)
 
 # =========================
 # LLM 輸出格式定義
@@ -163,6 +180,13 @@ def stdev_or_zero(values: List[float]) -> float:
     if len(values) <= 1:
         return 0.0
     return statistics.stdev(values)
+
+
+def most_common_value(values: List[str]) -> str:
+    if not values:
+        return ""
+    return max(values, key=lambda value: (values.count(value), value))
+
 
 # 輸出數值四捨五入到小數點後四位
 def round_metric(value: float) -> float:
@@ -311,6 +335,31 @@ def compute_cvss_result(factors: LLMFactorResult) -> RiskResult:
     return RiskResult(**payload)
 
 
+def has_zero_cvss_impact(factors: LLMFactorResult) -> bool:
+    return (
+        factors.confidentiality == "N"
+        and factors.integrity == "N"
+        and factors.availability == "N"
+    )
+
+
+def needs_impact_consistency_review(factors: LLMFactorResult) -> bool:
+    if not has_zero_cvss_impact(factors):
+        return False
+
+    return (
+        factors.root_cause_specificity >= 0.45
+        and factors.evidence_strength >= 0.45
+        and (
+            factors.security_impact_likelihood >= 0.35
+            or factors.memory_safety_relevance >= 0.35
+            or factors.input_validation_weakness >= 0.45
+            or factors.parser_state_influence >= 0.45
+            or factors.malformed_input_failure_mode >= 0.45
+        )
+    )
+
+
 # 從單次 run 的報告檔中擷取重點欄位，輸出一份較精簡的 score summary JSON。
 def build_score_payload(report_path: str) -> dict:
     score_items = []
@@ -375,6 +424,30 @@ def write_score_json(report_path: str, score_json_path: str) -> None:
     payload = build_score_payload(report_path)
     write_json(score_json_path, payload)
 
+
+def parse_llm_factors(client: OpenAI, model: str, messages: List[dict]) -> LLMFactorResult:
+    payload = {
+        "model": model,
+        "input": messages,
+        "text_format": LLMFactorResult,
+    }
+    if model_supports_temperature(model):
+        payload["temperature"] = DEFAULT_TEMPERATURE
+
+    try:
+        resp = client.responses.parse(**payload)
+    except Exception as e:
+        if "temperature" not in payload:
+            raise
+        message = str(e)
+        if "Unsupported parameter" not in message or "temperature" not in message:
+            raise
+        payload.pop("temperature")
+        resp = client.responses.parse(**payload)
+
+    return resp.output_parsed
+
+
 # =========================
 # LLM 呼叫
 # =========================
@@ -384,16 +457,27 @@ def call_llm(client: OpenAI, model: str, user_prompt: str, max_retries: int = 5)
 
     for _attempt in range(1, max_retries + 1):
         try:
-            resp = client.responses.parse(
-                model=model,
-                input=[
+            factors = parse_llm_factors(
+                client,
+                model,
+                [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                text_format=LLMFactorResult,
-                temperature=DEFAULT_TEMPERATURE,
             )
-            factors: LLMFactorResult = resp.output_parsed
+            if needs_impact_consistency_review(factors):
+                reviewed_factors = parse_llm_factors(
+                    client,
+                    model,
+                    [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                        {"role": "assistant", "content": factors.model_dump_json()},
+                        {"role": "user", "content": IMPACT_REVIEW_PROMPT},
+                    ],
+                )
+                if not has_zero_cvss_impact(reviewed_factors):
+                    factors = reviewed_factors
             return compute_cvss_result(factors)
         except Exception as e:
             last_err = e
@@ -611,6 +695,7 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
             "security_impact_likelihoods": [],
             "evidence_strengths": [],
             "confidences": [],
+            "cvss_vectors": [],
             "ranks": [],
             "risk_levels": [],
             "runs_present": [],
@@ -668,6 +753,9 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
             confidence = analysis.get("confidence")
             if isinstance(confidence, (int, float)) and not math.isnan(confidence):
                 by_function[key]["confidences"].append(float(confidence))
+            cvss_vector = analysis.get("cvss_vector")
+            if isinstance(cvss_vector, str) and cvss_vector:
+                by_function[key]["cvss_vectors"].append(cvss_vector)
             if key in ranks:
                 by_function[key]["ranks"].append(float(ranks[key]))
             by_function[key]["risk_levels"].append(analysis.get("risk_level"))
@@ -693,6 +781,7 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
         avg_confidence = mean_or_zero(info["confidences"])
         avg_rank = mean_or_zero(info["ranks"])
         rank_stdev = stdev_or_zero(info["ranks"])
+        dominant_cvss_vector = most_common_value(info["cvss_vectors"])
 
         summary_rows.append(
             {
@@ -734,6 +823,8 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
                 "run_malformed_chunk_handling_paths": [round_metric(v) for v in info["malformed_chunk_handling_paths"]],
                 "run_confidences": [round_metric(v) for v in info["confidences"]],
                 "run_ranks": [round_metric(v) for v in info["ranks"]],
+                "run_cvss_vectors": info["cvss_vectors"],
+                "dominant_cvss_vector": dominant_cvss_vector,
                 "risk_levels": info["risk_levels"],
             }
         )
@@ -816,6 +907,17 @@ def metric(value: object) -> float:
     return 0.0
 
 
+def cvss_cia_label(vector: str) -> str:
+    if not vector:
+        return "---"
+    parts = {}
+    for item in vector.split("/"):
+        if ":" in item:
+            key, value = item.split(":", 1)
+            parts[key] = value
+    return f"{parts.get('C', '-')}/{parts.get('I', '-')}/{parts.get('A', '-')}"
+
+
 def print_single_run_rank_summary(run_results: List[dict]) -> None:
     ranks = assign_ranks(run_results)
     rows = []
@@ -840,6 +942,7 @@ def print_single_run_rank_summary(run_results: List[dict]) -> None:
                 "failure": metric(analysis.get("malformed_input_failure_mode")),
                 "evidence": metric(analysis.get("evidence_strength")),
                 "confidence": metric(analysis.get("confidence")),
+                "vector": analysis.get("cvss_vector") or "",
             }
         )
 
@@ -851,11 +954,11 @@ def print_single_run_rank_summary(run_results: List[dict]) -> None:
     print("\nFinal Ranking Summary")
     print(
         f"{'Rank':>4}  {'Priority':>8}  {'Severity':>8}  {'Root':>6}  {'State':>6}  "
-        f"{'Len':>6}  {'Prog':>6}  {'Chunk':>6}  {'Fail':>6}  {'Evid':>6}  {'Conf':>6}  Function"
+        f"{'Len':>6}  {'Prog':>6}  {'Chunk':>6}  {'Fail':>6}  {'Evid':>6}  {'Conf':>6}  {'C/I/A':>5}  Function"
     )
     print(
         f"{'-' * 4}  {'-' * 8}  {'-' * 8}  {'-' * 6}  {'-' * 6}  "
-        f"{'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 48}"
+        f"{'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 5}  {'-' * 48}"
     )
 
     for row in rows:
@@ -865,8 +968,14 @@ def print_single_run_rank_summary(run_results: List[dict]) -> None:
             f"{row['root']:>6.4f}  {row['state']:>6.4f}  {row['length']:>6.4f}  "
             f"{row['progress']:>6.4f}  {row['chunk']:>6.4f}  {row['failure']:>6.4f}  "
             f"{row['evidence']:>6.4f}  {row['confidence']:>6.4f}  "
+            f"{cvss_cia_label(row['vector']):>5}  "
             f"{truncate_text(function_label, 48)}"
         )
+
+    print("\nCVSS vectors")
+    for row in rows:
+        function_label = f"{row['func_name']} ({row['line_start']}-{row['line_end']})"
+        print(f"{row['rank']:>4}  {truncate_text(function_label, 48)}  {row['vector']}")
 
 
 def print_average_rank_summary(payload: dict) -> None:
@@ -888,12 +997,12 @@ def print_average_rank_summary(payload: dict) -> None:
     print(
         f"{'Rank':>4}  {'AvgRank':>7}  {'Priority':>8}  {'Severity':>8}  {'Root':>6}  "
         f"{'State':>6}  {'Len':>6}  {'Prog':>6}  {'Chunk':>6}  {'Fail':>6}  "
-        f"{'Evid':>6}  {'Conf':>6}  {'Vol':>6}  {'Runs':>7}  Function"
+        f"{'Evid':>6}  {'Conf':>6}  {'Vol':>6}  {'Runs':>7}  {'C/I/A':>5}  Function"
     )
     print(
         f"{'-' * 4}  {'-' * 7}  {'-' * 8}  {'-' * 8}  {'-' * 6}  "
         f"{'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 6}  "
-        f"{'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 7}  {'-' * 48}"
+        f"{'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 7}  {'-' * 5}  {'-' * 48}"
     )
 
     for idx, row in enumerate(rows, 1):
@@ -912,8 +1021,14 @@ def print_average_rank_summary(payload: dict) -> None:
             f"{row['average_evidence_strength']:>6.4f}  "
             f"{row['average_confidence']:>6.4f}  "
             f"{row['rank_volatility']:>6.4f}  {completed_runs:>7}  "
+            f"{cvss_cia_label(row.get('dominant_cvss_vector') or ''):>5}  "
             f"{truncate_text(function_label, 48)}"
         )
+
+    print("\nDominant CVSS vectors")
+    for idx, row in enumerate(rows, 1):
+        function_label = f"{row['func_name']} ({row['line_start']}-{row['line_end']})"
+        print(f"{idx:>4}  {truncate_text(function_label, 48)}  {row.get('dominant_cvss_vector') or ''}")
 
 
 # =========================
@@ -945,7 +1060,7 @@ def main() -> None:
     ap.add_argument("--in", dest="in_path", default="functions.jsonl")
     ap.add_argument("--out", dest="out_path", default="risk_report.jsonl")
     ap.add_argument("--out-dir", default="", help="Output directory for multi-run artifacts")
-    ap.add_argument("--model", default="gpt-4o-2024-08-06", help="GPT-4o model id")
+    ap.add_argument("--model", default="gpt-4o-2024-08-06", help="OpenAI model id")
     ap.add_argument("--topk", type=int, default=0, help="Only analyze top-k by baseline score (0 = analyze all)")
     ap.add_argument("--git", action="store_true", help="Include git commit messages (file-level) in prompt")
     ap.add_argument("--repo", default=".", help="Path to git repo root (used when --git is set)")

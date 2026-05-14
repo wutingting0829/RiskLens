@@ -7,12 +7,12 @@ from .prompt_utils import (
 )
 
 PROMPT_NAME = "hybrid_root_cause_prioritization"
-PROMPT_VERSION = "hybrid_root_cause_prioritization_v9_logic_gatekeeper"
+PROMPT_VERSION = "hybrid_root_cause_prioritization_v10_impact_consistency"
 
 SYSTEM_PROMPT = (
     "You are a senior software security expert specializing in vulnerability analysis of C code.\n\n"
 
-    "Your task is to assess whether the provided function is a likely vulnerability root-cause candidate for a parser failure-mode bug, especially malformed chunk/chunked-input handling. "
+    "Your task is to assess whether the provided function is a likely vulnerability root-cause candidate for a parser, decompiler, malformed-input, or type-confusion failure-mode bug. "
     "Use a hybrid approach: select CVSS v3.1 Base Metrics for severity computation, and score case-specific parser behavior proxy factors for root-cause prioritization.\n\n"
 
     "Important requirements:\n"
@@ -60,6 +60,7 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "- For parser/decompiler functions involving CAST, Action, SWF_ACTION, decompilation, or bytecode/property interpretation, explicitly check type-cast safety. "
         "Treat integer-to-buffer-size casts, signed/unsigned conversions, enum/integer mismatches, narrowing or widening conversions, and Type Mismatch in Decompilation as security-relevant when attacker-controlled input can influence sizes, offsets, indexes, allocation lengths, copy lengths, or parser state.\n"
         "- A cast is safe only when the source value has been validated against the destination type range and the downstream buffer/allocation/state invariant before the cast-dependent operation occurs.\n"
+        "- If malformed file, bytecode, action, tag, or parser input can plausibly cause a crash, abort, infinite loop, invalid memory access, resource exhaustion, unsafe state transition, out-of-bounds read/write, or corrupted downstream interpretation, do not assign C:N/I:N/A:N merely because the exact exploit primitive is incomplete at function scope.\n"
         "- Treat parser validation gatekeeper functions as security-sensitive even when they do not directly write memory. "
         "A gatekeeper is a function that accepts/rejects syntax, validates tags/fields/actions/properties, selects legal parser states, or decides whether downstream parsing may continue.\n"
         "- For boolean or status-returning validation functions, explicitly consider the consequence if return 0, return 1, true, false, success, or failure is reversed, misinterpreted, or reached through an incomplete check. "
@@ -79,6 +80,7 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "6. For gatekeeper functions, ask: if the return value or success/failure meaning is inverted, misread, or too permissive, what malformed input reaches later parser, allocation, copy, dispatch, or state-transition code?\n"
         "7. Decide whether this function is likely a true root-cause candidate, or only a similar high-risk-looking function.\n"
         "8. Assign each CVSS Base Metric using the factor rubric below; these describe severity if the issue is real.\n"
+        "8a. Before selecting C/I/A, perform an impact consistency check: if your proxy factors indicate plausible root-cause evidence, explain why impact is truly absent before selecting C:N/I:N/A:N.\n"
         "9. Assign function-level proxy factors; these describe how useful this function is for root-cause prioritization.\n"
         "10. Treat uncertain candidates as non-zero when there is meaningful local evidence, even if CVSS severity is hard to map.\n"
     )
@@ -128,7 +130,14 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "8. Availability (A): crash, resource exhaustion, or denial-of-service impact.\n"
         "- A:H: Use when the issue may cause service crash, sustained/persistent DoS, or repeated triggering that makes the service fully unavailable.\n"
         "- A:L: Use when the issue may cause partial slowdown, intermittent degradation, or small-scope availability loss.\n"
-        "- A:N: Use when there is no clear availability impact.\n"
+        "- A:N: Use when there is no clear availability impact.\n\n"
+
+        "Impact consistency calibration:\n"
+        "- If a function has meaningful local evidence of unsafe type conversion, attacker-controlled size/index/offset interpretation, parser-state desynchronization, malformed action/tag acceptance, invalid memory access risk, or decompiler/type mismatch behavior, C:N/I:N/A:N should be rare and must be justified by evidence that the code cannot affect memory, parser state, output, or availability.\n"
+        "- When malformed input can plausibly crash the process, trigger assertion/abort behavior, create unbounded recursion/looping, or make parsing/decompilation fail in a repeated attacker-triggerable way, choose at least A:L.\n"
+        "- When malformed input can plausibly corrupt parser/decompiler state, action dispatch, emitted output, policy decisions, or downstream interpretation without clear full compromise, choose at least I:L.\n"
+        "- When malformed input can plausibly drive out-of-bounds reads, disclosure through emitted decompiler output, or reading unintended memory/data, choose at least C:L.\n"
+        "- Keep impact low or none when evidence is truly generic, but do not collapse plausible root-cause candidates to zero severity solely because the complete call chain is missing.\n"
     )
 
     prioritization_rubric = (
