@@ -15,11 +15,9 @@ python3 analyze_llm.py --in functions.jsonl --runs 5 --out-dir outputs/baseline 
 // outputs/baseline/runs.jsonl: 所有 run 聚合結果
 // outputs/baseline/baseline_summary.json: 每個 function 的平均分數、標準差、平均排名、排名波動
 // outputs/baseline/baseline_summary.md: baseline summary table
-
-
 ```
 
-//跑CVE_2013_2028 case
+### Test Case - CVE-2013-2028
 ```
 ./build/func_extractor /home/sense/nginx-1.4.0/src/http/ngx_http_parse.c -- \
   -DNGX_LINUX=1 \
@@ -39,18 +37,8 @@ python3 analyze_llm.py --in functions.jsonl --runs 5 --out-dir outputs/baseline 
 
 ```
 
-// factor-based testing
-```
-python3 analyze_llm.py \
-  --in output.jsonl \
-  --runs 5 \
-  --out-dir outputs/factor_cvss_test \
-  --score-json outputs/factor_cvss_test/summary.json \
-  --model gpt-4o-2024-08-06
 
-```
-
-// Test Case - 2019-12982
+### Test Case - 2019-12982
 ```
 cd /home/sense/func-extractor
 
@@ -72,15 +60,9 @@ python3 analyze_llm.py \
   --model gpt-4o-2024-08-0
 ```
 
-// Test Case - 2021-3156
-```
 
 
-```
-
-
-
-// Test Case - 2022-34526
+### Test Case - CVE-2022-34526
 ```
 cd /home/sense/func-extractor
 
@@ -109,7 +91,7 @@ cd /home/sense/func-extractor
 
 ```
 
-//Test Case - 2021-29338
+### Test Case - CVE-2021-29338
 ```
 cd /home/sense/func-extractor
 
