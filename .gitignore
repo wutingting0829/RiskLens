@@ -2,9 +2,9 @@ build/
 *.o
 *.out
 *.jsonl
+!outputs/**/*.jsonl
 
 # Local experiment inputs / outputs
-outputs/
 
 # Python cache
 __pycache__/
