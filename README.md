@@ -133,3 +133,22 @@ python3 analyze_llm.py \
 
 ```
 
+## Across Function Cases
+###  Test Case - CVE-2022-3602
+```
+cd /home/sense/func-extractor
+./build/func_extractor input/cve-2022-3602.c -- \
+  -std=c11 \
+  -I/home/sense/openssl/include \
+  -I/home/sense/miniconda3/lib/clang/16/include \
+  > input/cve-2022-3602-function.jsonl
+
+python3 analyze_llm.py \
+  --in input/cve-2022-3602-function.jsonl \
+  --runs 5 \
+  --out-dir outputs/cve-2022-3602 \
+  --score-json outputs/cve-2022-3602/summary.json \
+  --model gpt-5.5
+
+
+```

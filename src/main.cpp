@@ -649,6 +649,8 @@ private:
         return Edge;
     }
 
+    static constexpr size_t kMaxCallContextEdges = 3;
+
     static std::vector<CalleeEdge> selectTopCallees(const std::vector<CalleeEdge> &Edges) {
         std::vector<CalleeEdge> Ranked;
         for (const auto &Edge : Edges) {
@@ -660,7 +662,7 @@ private:
             if (A.roleMatchScore != B.roleMatchScore) return A.roleMatchScore > B.roleMatchScore;
             return A.dangerSignalScore < B.dangerSignalScore;
         });
-        if (Ranked.size() > 2) Ranked.resize(2);
+        if (Ranked.size() > kMaxCallContextEdges) Ranked.resize(kMaxCallContextEdges);
         return Ranked;
     }
 
@@ -741,7 +743,7 @@ private:
         std::stable_sort(Ranked.begin(), Ranked.end(), [](const CallerEdge &A, const CallerEdge &B) {
             return A.relevanceScore > B.relevanceScore;
         });
-        if (Ranked.size() > 2) Ranked.resize(2);
+        if (Ranked.size() > kMaxCallContextEdges) Ranked.resize(kMaxCallContextEdges);
         return Ranked;
     }
 
