@@ -149,6 +149,55 @@ python3 analyze_llm.py \
   --out-dir outputs/cve-2022-3602 \
   --score-json outputs/cve-2022-3602/summary.json \
   --model gpt-5.5
+```
 
+### Test Case - CVE-2022-37433
+```
+cd /home/sense/func-extractor
+./build/func_extractor input/cve-2022-37434.c -- \
+  -std=c11 \
+  -I/home/sense/zlib \
+  -I/home/sense/miniconda3/lib/clang/16/include \
+  > input/cve-2022-37434-function.jsonl
+
+python3 analyze_llm.py \
+  --in input/cve-2022-37434-function.jsonl \
+  --runs 5 \
+  --out-dir outputs/cve-2022-37434 \
+  --score-json outputs/cve-2022-37434/summary.json \
+  --model gpt-5.5
+```
+
+### Test Case - CVE-2022-0185
+```
+cd /home/sense/func-extractor
+
+./build/func_extractor input/cve-2022-0185.c -- \
+  -std=gnu11 \
+  -nostdinc \
+  -I/usr/src/linux-headers-6.11.0-19-generic/arch/x86/include/generated \
+  -I/usr/src/linux-headers-6.11.0-19-generic/arch/x86/include/generated/uapi \
+  -I/usr/src/linux-headers-6.11.0-19-generic/include \
+  -I/usr/src/linux-headers-6.11.0-19-generic/include/generated \
+  -I/usr/src/linux-headers-6.11.0-19-generic/include/generated/uapi \
+  -I/usr/src/linux-hwe-6.11-headers-6.11.0-19/arch/x86/include \
+  -I/usr/src/linux-hwe-6.11-headers-6.11.0-19/arch/x86/include/uapi \
+  -I/usr/src/linux-hwe-6.11-headers-6.11.0-19/include \
+  -I/usr/src/linux-hwe-6.11-headers-6.11.0-19/include/uapi \
+  -I/home/sense/linux/fs \
+  -include /usr/src/linux-hwe-6.11-headers-6.11.0-19/include/linux/kconfig.h \
+  -include /usr/src/linux-hwe-6.11-headers-6.11.0-19/include/linux/compiler-version.h \
+  -include /usr/src/linux-hwe-6.11-headers-6.11.0-19/include/linux/compiler_types.h \
+  -D__KERNEL__ \
+  -DKBUILD_MODNAME='"fs_context"' \
+  -I/home/sense/miniconda3/lib/clang/16/include \
+  > input/cve-2022-0185-function.jsonl
+
+python3 analyze_llm.py \
+  --in input/cve-2022-0185-function.jsonl \
+  --runs 5 \
+  --out-dir outputs/cve-2022-0185 \
+  --score-json outputs/cve-2022-0185/summary.json \
+  --model gpt-5.5
 
 ```
