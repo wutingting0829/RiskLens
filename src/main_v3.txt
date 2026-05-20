@@ -75,7 +75,6 @@ public:
 
         CallCollector CallVisitor(Context, &Info);
         CallVisitor.TraverseStmt(Body);
-        addSecurityOrderingSignals(Info);
 
         Functions.push_back(std::move(Info));
 
@@ -157,12 +156,6 @@ private:
         int relevanceScore = 0;
     };
 
-    struct OperationSignal {
-        std::string operationClass;
-        std::string cweFamily;
-        std::string evidence;
-    };
-
     struct CalleeEdge {
         std::string funcName;
         std::string relevance;
@@ -171,24 +164,13 @@ private:
         std::vector<std::string> argumentCategories;
         std::vector<std::string> dangerSignals;
         std::vector<std::string> localSignals;
-         // New taxonomy-guided fields
-        std::vector<OperationSignal> operationSignals;
-        std::vector<std::string> operationClasses;
-        std::vector<std::string> cweFamilies;
-
         std::string evidenceScope = "downstream_only";
         bool isCurrentFunctionEvidence = false;
         bool isDownstreamEvidence = true;
         int argumentFlowScore = 0;
         int roleMatchScore = 0;
         int dangerSignalScore = 0;
-        // New taxonomy-guided scores
-        int operationSignalScore = 0;
-        int securityContextScore = 0;
-
         int relevanceScore = 0;
-        
-        
     };
 
     ASTContext *Context;
@@ -331,67 +313,6 @@ private:
         }
     };
 
-    static bool callNameLooksBoundaryTransition(const std::string &FuncName) {
-        std::string Name = lowerCopy(FuncName);
-        return containsAny(Name, {
-            "pivot_root", "unpivot", "chroot", "runchroot", "setns", "mount",
-            "chdir", "fchdir", "setuid", "seteuid", "setreuid", "setresuid",
-            "setgid", "setegid", "setregid", "setresgid", "setgroups",
-            "initgroups", "set_perms", "restore_perms", "capset"
-        });
-    }
-
-    static bool callNameLooksAuthorityDependentResolution(const std::string &FuncName) {
-        std::string Name = lowerCopy(FuncName);
-        return containsAny(Name, {
-            "resolve", "resolve_cmnd", "find_path", "find_editor", "lookup",
-            "getpwnam", "getpwuid", "getgrnam", "getgrgid", "sudo_getpw",
-            "sudo_getgr", "nss", "realpath", "canonical", "open_conf_path",
-            "open", "stat", "lstat", "fstat", "readlink", "sudo_secure"
-        });
-    }
-
-    static void addSecurityOrderingSignals(FunctionInfo &Info) {
-        for (size_t I = 0; I < Info.calls.size(); ++I) {
-            const CallInfo &BoundaryCall = Info.calls[I];
-            if (!callNameLooksBoundaryTransition(BoundaryCall.calleeName)) continue;
-
-            for (size_t J = I + 1; J < Info.calls.size(); ++J) {
-                const CallInfo &ResolutionCall = Info.calls[J];
-                if (!callNameLooksAuthorityDependentResolution(ResolutionCall.calleeName)) continue;
-
-                std::string Expression = BoundaryCall.calleeName + " -> " + ResolutionCall.calleeName;
-                std::string Signal =
-                    "security-sensitive boundary transition around authority-dependent resolution: " +
-                    Expression;
-                Info.currentFunctionSignals.push_back(Signal);
-                Info.currentFunctionSignals = uniqueStrings(Info.currentFunctionSignals);
-
-                DirectEvidence Evidence;
-                Evidence.kind = "security_boundary_transition_around_resolution";
-                Evidence.lhs = "security boundary state";
-                Evidence.calleeName = ResolutionCall.calleeName;
-                Evidence.expression = Expression;
-                Evidence.evidenceStrength = "strong";
-                Evidence.explanation =
-                    "The current function locally performs a security-sensitive boundary transition before or around "
-                    "name, path, command, or authority-dependent resolution. Treat this ordering as direct current-function "
-                    "evidence because the security boundary state controls how the later lookup is interpreted.";
-                Evidence.boundCheckObserved = false;
-
-                bool Seen = false;
-                for (const auto &Existing : Info.crossFunctionDirectEvidence) {
-                    if (Existing.kind == Evidence.kind && Existing.expression == Evidence.expression) {
-                        Seen = true;
-                        break;
-                    }
-                }
-                if (!Seen) Info.crossFunctionDirectEvidence.push_back(Evidence);
-                break;
-            }
-        }
-    }
-
     //JSON 跳脫函式
     static std::string escapeJson(const std::string &input){
         std::string output;
@@ -515,34 +436,6 @@ private:
         if (containsAny(Combined, {"off", "offset", "pos", "position", "cursor", "idx", "index"})) Categories.push_back("offset/progress value");
         if (containsAny(Combined, {"buf", "buffer", "ptr", "pointer", "dst", "dest", "src"})) Categories.push_back("buffer/pointer");
         if (Categories.empty()) Categories.push_back("unclear from syntax");
-        
-        // New taxonomy-guided categories
-        if (containsAny(Combined, {"path", "file", "dir", "fd", "root", "cwd"}))
-            Categories.push_back("path/file resource");
-
-        if (containsAny(Combined, {"cmd", "cmnd", "command", "argv", "exec"}))
-            Categories.push_back("command/execution data");
-
-        if (containsAny(Combined, {"uid", "gid", "user", "group", "runas", "cred", "role"}))
-            Categories.push_back("identity/principal");
-
-        if (containsAny(Combined, {"chroot", "root", "runchroot", "pivot", "namespace", "mount", "cwd"}))
-            Categories.push_back("filesystem namespace state");
-
-        if (containsAny(Combined, {"nss", "pam", "passwd", "shadow", "config", "policy", "lookup"}))
-            Categories.push_back("trust/config lookup");
-
-        if (containsAny(Combined, {"auth", "permission", "policy", "rule", "allow", "deny", "check"}))
-            Categories.push_back("auth/policy decision");
-
-        if (containsAny(Combined, {"env", "environ", "locale", "loader", "ld_preload"}))
-            Categories.push_back("environment/runtime context");
-
-        if (containsAny(Combined, {"cert", "x509", "ssl", "tls", "asn1", "crypto"}))
-            Categories.push_back("crypto/certificate state");
-
-        if (Categories.empty()) Categories.push_back("unclear from syntax");
-
         return uniqueStrings(Categories);
     }
 
@@ -559,14 +452,6 @@ private:
     static bool callerNameLooksParserLike(const std::string &FuncName) {
         std::string Name = lowerCopy(FuncName);
         return containsAny(Name, {"parser", "parse", "decompile", "decode", "load", "scan", "check", "validate", "dispatch"});
-    }
-
-    static bool isLoggingOrDebugHelper(const std::string &FuncName) {
-        std::string Name = lowerCopy(FuncName);
-        return containsAny(Name, {
-            "log", "debug", "trace", "warn", "warning", "error", "fatal",
-            "print", "printf", "fprintf", "snprintf", "syslog", "audit"
-        });
     }
 
     static bool argsLookInputLike(const std::string &Args) {
@@ -617,33 +502,6 @@ private:
         return "connected by a direct call, but control-path importance is unclear";
     }
 
-    //cleanup helper 判斷
-    static bool isCleanupOrFreeHelper(const std::string &Name) {
-        std::string N = lowerCopy(Name);
-        return containsAny(N, {
-            "free",
-            "delref",
-            "close",
-            "cleanup",
-            "destroy",
-            "release"
-        });
-    }
-
-    //高價值 security operation 判斷，這些 operation 的出現通常是安全檢查、權限變更、重要資源存取等關鍵安全行為的 strong signal
-    static bool hasHighValueSecurityOperation(const std::vector<std::string> &OperationClasses) {
-        std::string Ops = lowerCopy(joinStrings(OperationClasses, " "));
-        return containsAny(Ops, {
-            "filesystem_namespace_transition",
-            "privilege_identity_transition",
-            "trust_config_lookup",
-            "dynamic_code_loading",
-            "auth_policy_gate",
-            "command_execution",
-            "crypto_certificate_validation"
-        });
-    }
-
     static CallerEdge buildCallerEdge(const FunctionInfo &Caller, const CallInfo &Call) {
         CallerEdge Edge;
         Edge.funcName = Caller.funcName;
@@ -657,25 +515,7 @@ private:
         return Edge;
     }
 
-    //避免同一個 function 因為同時出現 chroot 和 pivot_root，重複加入多個一樣的 filesystem_namespace_transition，造成分數膨脹。
-    static void addOperationSignal(
-        std::vector<OperationSignal> &Signals,
-        const std::string &OperationClass,
-        const std::string &CweFamily,
-        const std::string &Evidence
-    ){
-        for(const auto &S : Signals){
-            if(S.operationClass == OperationClass && S.cweFamily == CweFamily) return;
-        }
-
-        OperationSignal Signal;
-        Signal.operationClass = OperationClass;
-        Signal.cweFamily = CweFamily;
-        Signal.evidence = Evidence;
-        Signals.push_back(Signal);
-    }
-
-    // 針對被呼叫者（Callee）的分析。它會掃描被呼叫函數的名字和原始碼，尋找既有的危險特徵：
+    // 針對被呼叫者（Callee）的分析。它會掃描被呼叫函數的名字和原始碼，尋找危險特徵：
     static std::vector<std::string> detectDangerSignals(const std::string &FuncName, const std::string &Code) {
         std::string Text = lowerCopy(FuncName + " " + Code);
         std::vector<std::string> Signals;
@@ -699,210 +539,16 @@ private:
         return uniqueStrings(Signals);
     }
 
-    // Taxonomy-guided operation signals are kept separate from legacy string danger signals.
-    static std::vector<OperationSignal> detectOperationSignals(const std::string &FuncName, const std::string &Code) {
-        std::string Text = lowerCopy(FuncName + " " + Code);
-        std::vector<OperationSignal> Signals;
-
-        // 1. Memory write / buffer operation
-        if(containsAny(Text,{  "memcpy", "memmove", "bcopy", "strcpy", "strncpy","strcat", "strncat", "sprintf", "snprintf","write", "append", "dst", "dest", "src"})){
-            addOperationSignal(
-                Signals, 
-                "memory_write",
-                "memory_safety",
-                "Function appears to perform memory, string, or buffer write operations.");
-        }
-            // 2. Size / index / length computation
-        if (containsAny(Text, {
-            "len", "length", "size", "count", "nbytes","idx", "index", "offset", "remain", "remaining", "malloc", "calloc", "realloc"})) {
-            addOperationSignal(
-                Signals,
-                "size_index_arithmetic",
-                "integer_size",
-                "Function uses size, length, index, offset, or allocation-related values.");
-        }
-
-        // 3. Allocation / lifetime
-        if (containsAny(Text, {"malloc", "calloc", "realloc", "free", "new ", "delete "})) {
-            addOperationSignal(
-                Signals,
-                "allocation_lifetime",
-                "resource_lifecycle",
-                "Function manages allocation, deallocation, or object lifetime.");
-        }
-
-        // 4. Parser / decoder
-        if (containsAny(Text, {"parse", "parser", "decode", "decompile", "read","next", "advance", "consume", "token", "tag", "field", "opcode", "chunk", "state"})) {
-            addOperationSignal(
-                Signals,
-                 "parser_decoder",
-                "input_validation_parser",
-                "Function appears to parse, decode, or advance structured input state.");
-        }
-
-        // 5. Path / file / resource resolution
-        if (containsAny(Text, {"path", "file", "dir", "fd", "open", "fopen", "stat", "lstat", "realpath", "canonical", "resolve", "symlink", "readlink"})) {
-            addOperationSignal(
-                Signals,
-                "path_file_resolution",
-                "path_file_resource",
-                "Function appears to resolve paths, files, directories, or filesystem resources.");
-        }
-
-        // 6. Command execution / command resolution
-        if (containsAny(Text, {"system", "exec", "execve", "execl", "execv", "popen", "command", "cmd", "cmnd", "argv"})) {
-            addOperationSignal(
-                Signals,
-                "command_execution",
-                "injection_command_execution",
-                "Function appears to execute, construct, or resolve commands.");
-        }
-
-        // 7. Privilege / identity transition
-        if (containsAny(Text, {"setuid", "seteuid", "setreuid", "setresuid", "setgid", "setegid", "setregid", "setresgid", "setgroups", "initgroups", "uid", "gid", "user", "group", "runas", "cred", "capset", "cap_"})) {
-            addOperationSignal(
-                Signals,
-                "privilege_identity_transition",
-                "privilege_access_control",
-                "Function appears to manipulate user/group identity, credentials, or privilege state.");
-        }
-
-        // 8. Filesystem namespace / root transition
-        if (containsAny(Text, {"chroot", "pivot_root", "unpivot", "rootdir", "runchroot", "chdir", "fchdir", "setns", "mount", "namespace", "cwd"})) {
-            addOperationSignal(
-                Signals,
-                "filesystem_namespace_transition",
-                "privilege_access_control",
-                "Function appears to change filesystem root, working directory, or namespace context.");
-        }
-
-        // 9. Trust/config lookup: NSS/PAM/passwd/group/config/policy
-        if (containsAny(Text, { "nss", "pam", "passwd", "shadow", "group", "getpwnam", "getpwuid", "getgrnam", "getgrgid", "lookup", "nsswitch", "config", "policy"})) {
-            addOperationSignal(
-                Signals,
-                "trust_config_lookup",
-                "trust_boundary_security_decision",
-                "Function appears to read identity, policy, configuration, or trusted lookup data.");
-        }
-
-        // 10. Dynamic code loading
-        if (containsAny(Text, { "dlopen", "dlsym", "loadlibrary", "module", "plugin", ".so", "shared object", "library"})) {
-            addOperationSignal(
-                Signals,
-                "dynamic_code_loading",
-                "trust_boundary_security_decision",
-                "Function appears to load external code, modules, plugins, or dynamic libraries.");
-        }
-
-        // 11.  Authorization / policy gate
-        if (containsAny(Text, { "check", "validate", "verify", "match", "allow", "deny", "policy", "permission", "authorize", "auth", "sudoers", "rule"})) {
-            addOperationSignal(
-                Signals,
-                "auth_policy_gate",
-                "privilege_access_control",
-                "Function appears to participate in authorization, policy, validation, or permission checks.");
-        }
-        
-        // 12. Crypto / certificate validation
-        if (containsAny(Text, { "x509", "cert", "certificate", "ssl", "tls", "verify", "signature", "crypto", "asn1", "punycode", "name constraint"})) {
-            addOperationSignal(
-                Signals,
-                "crypto_certificate_validation",
-                "crypto_auth_certificate",
-                "Function appears related to cryptographic, certificate, or security validation logic.");
-        }
-
-        // 13. Race / ordering / locking
-        if (containsAny(Text, { "lock", "unlock", "mutex", "race", "atomic", "before", "after", "toctou"})) {
-            addOperationSignal(
-                Signals,
-                "race_ordering",
-                "race_ordering_toctou",
-                "Function appears to involve synchronization, ordering, or check-use timing.");
-        }
-
-        // 14. Environment / runtime context
-        if (containsAny(Text, { "env", "environ", "getenv", "setenv", "putenv", "locale", "loader", "ld_preload", "home", "shell" })) {
-            addOperationSignal(
-                Signals,
-                "environment_runtime_context",
-                "trust_boundary_security_decision",
-                "Function appears to depend on environment or runtime context.");
-        }
-
-        return Signals;
+    static std::string summarizeCalleeRelevance(const std::vector<std::string> &Signals) {
+        if (Signals.empty()) return "has no obvious local signal";
+        return "performs " + joinStrings(Signals, ", ");
     }
 
-    //輸出可統計欄位
-    static std::vector<std::string> extractOperationClasses(const std::vector<OperationSignal> &Signals){
-        std::vector<std::string> Result;
-        for(const auto &S : Signals){
-            Result.push_back(S.operationClass);
-        }
-        return uniqueStrings(Result);
-    }
-
-    static std::vector<std::string> extractCweFamilies(const std::vector<OperationSignal> &Signals){
-        std::vector<std::string> Result;
-        for (const auto &S : Signals) {
-            Result.push_back(S.cweFamily);
-        }
-        return uniqueStrings(Result);
-    }
-
-    static std::vector<std::string> summarizeOperationSignals(const std::vector<OperationSignal> &Signals){
-        std::vector<std::string> Result;
-        for (const auto &S : Signals) {
-            Result.push_back(S.operationClass + " -> " + S.cweFamily);
-        }
-        return uniqueStrings(Result);
-    }
-
-    
-
-    static std::string summarizeCalleeRelevance(const std::vector<std::string> &Signals, const std::vector<std::string> &OperationClasses) {
-        std::vector<std::string> Parts;
-        if (!Signals.empty()) {
-            Parts.push_back("local signals: " + joinStrings(Signals, ", "));
-        }
-        if (!OperationClasses.empty()) {
-            Parts.push_back("operation signals: " + joinStrings(OperationClasses, ", "));
-        }
-        if (Parts.empty()) return "has no obvious local signals";
-        return joinStrings(Parts, " "); 
-    }
-
-    static std::string summarizeCalleeRoleHint(const std::vector<std::string> &Signals, const std::vector<std::string> &OperationClasses) {
-        std::string SignalText = lowerCopy(joinStrings(Signals, " "));
-        std::string OperationText = lowerCopy(joinStrings(OperationClasses, " "));
-        if (containsAny(OperationText, {"filesystem_namespace_transition", "privilege_identity_transition"})) {
-            return "downstream privilege or namespace state-transition helper";
-        }
-
-        if (containsAny(OperationText, {"trust_config_lookup", "dynamic_code_loading"})) {
-            return "downstream trust/config lookup or dynamic loading helper";
-        }
-
-        if (containsAny(OperationText, {"auth_policy_gate"})) {
-            return "downstream authorization or policy gate helper";
-        }
-
-        if (containsAny(OperationText, {"path_file_resolution", "command_execution"})) {
-            return "downstream path or command resolution helper";
-        }
-
-        if (containsAny(OperationText, {"crypto_certificate_validation"})) {
-            return "downstream crypto/certificate validation helper";
-        }       
-
-        if (containsAny(OperationText, {"memory_write", "allocation_lifetime"})) {
-            return "downstream memory/data operation helper";
-        }
-
+    static std::string summarizeCalleeRoleHint(const std::vector<std::string> &Signals) {
+        std::string SignalText = joinStrings(Signals, " ");
         if (containsAny(SignalText, {"validation logic", "parser state update", "type conversion/cast"})) {
             return "downstream validation/state helper";
         }
-
         if (containsAny(SignalText, {"memory copy", "allocation", "buffer write", "string handling", "stack manipulation"})) {
             return "downstream dangerous primitive helper";
         }
@@ -920,42 +566,6 @@ private:
         return std::min(Score, 2);
     }
 
-    static int scoreCalleeOperationSignals(const std::vector<OperationSignal> &Signals) {
-        int Score = 0;
-
-        for (const auto &Signal : Signals) {
-            const std::string &Cls = Signal.operationClass;
-
-            if (
-                Cls == "memory_write" ||
-                Cls == "command_execution" ||
-                Cls == "privilege_identity_transition" ||
-                Cls == "filesystem_namespace_transition" ||
-                Cls == "dynamic_code_loading"
-            ) {
-                Score += 2;
-            } else if (
-                Cls == "trust_config_lookup" ||
-                Cls == "auth_policy_gate" ||
-                Cls == "path_file_resolution" ||
-                Cls == "crypto_certificate_validation"
-            ) {
-                Score += 2;
-            } else if (
-                Cls == "size_index_arithmetic" ||
-                Cls == "allocation_lifetime" ||
-                Cls == "parser_decoder" ||
-                Cls == "race_ordering" ||
-                Cls == "environment_runtime_context"
-            ) {
-                Score += 1;
-            }     
-        }
-        return std::min(Score, 6);
-    }
-
-    
-
     static int scoreCalleeArgumentFlow(const std::vector<std::string> &Categories) {
         int Score = 0;
         for (const auto &Category : Categories) {
@@ -964,70 +574,20 @@ private:
             else if (Category == "parser state") Score += 3;
             else if (Category == "action data") Score += 3;
             else if (Category == "offset/progress value") Score += 3;
-
-            // New taxonomy-guided categories
-            else if (Category == "path/file resource") Score += 4;
-            else if (Category == "command/execution data") Score += 4;
-            else if (Category == "identity/principal") Score += 4;
-            else if (Category == "filesystem namespace state") Score += 5;
-            else if (Category == "trust/config lookup") Score += 5;
-            else if (Category == "auth/policy decision") Score += 4;
-            else if (Category == "environment/runtime context") Score += 4;
-            else if (Category == "crypto/certificate state") Score += 4;
         }
-        return std::min(Score, 8);
+        return Score;
     }
-
-    //有些 function 沒有明顯 memory operation，但位於 security-critical path 上，仍然值得關注。例如一個叫 check_policy 的 function，裡面沒有明顯的 memory operation，但它的名字和內容都強烈暗示它在做安全檢查。這種情況下，我們可以給它一個額外的分數加成，以反映它在安全上下文中的重要性。
-    static int scoreSecurityContext(const std::string &FuncName, const std::string &Code) {
-        
-        if (isLoggingOrDebugHelper(FuncName)) {
-            return 0;
-        }
-
-        std::string Text = lowerCopy(FuncName + " " + Code);
-        int Score = 0;
-
-
-        if (containsAny(Text, {
-            "sudo", "sudoers", "policy", "auth", "permission",
-            "check", "validate", "verify", "match", "allow", "deny"
-        })) {
-            Score += 1;
-        }
-
-        if (containsAny(Text, {
-            "root", "uid", "gid", "runas", "priv", "credential",
-            "chroot", "nss", "pam"
-        })) {
-            Score += 1;
-        }
-
-        if (containsAny(Text, {
-            "x509", "cert", "ssl", "tls", "crypto", "signature"
-        })) {
-            Score += 1;
-        }
-
-        return std::min(Score, 2);
-    }
-
-
-    
 
     static int scoreCalleeRoleMatch(
         const std::string &FuncName,
         const std::vector<std::string> &Categories,
-        const std::vector<std::string> &Signals,
-        const std::vector<OperationSignal> &OperationSignals
+        const std::vector<std::string> &Signals
     ) {
         std::string Name = lowerCopy(FuncName);
         std::string CategoryText = lowerCopy(joinStrings(Categories, " "));
         std::string SignalText = lowerCopy(joinStrings(Signals, " "));
-        std::string OperationText = lowerCopy(joinStrings(extractOperationClasses(OperationSignals), " "));
         int Score = 0;
 
-        // Existing memory/parser-oriented role matching 
         if (
             containsAny(CategoryText, {"buffer", "pointer"})
             && (containsAny(SignalText, {"memory copy", "buffer write", "string handling"}) || containsAny(Name, {"copy", "str", "mem", "put", "write"}))
@@ -1053,64 +613,7 @@ private:
             Score += 3;
         }
 
-        // New taxonomy-guided role matching
-        if (
-            containsAny(CategoryText, {"path/file resource"})
-            && containsAny(OperationText, {"path_file_resolution", "filesystem_namespace_transition"})
-        ) {
-            Score += 3;
-        }
-
-        if (
-            containsAny(CategoryText, {"command/execution data"})
-            && containsAny(OperationText, {"command_execution", "path_file_resolution"})
-        ) {
-            Score += 3;
-        }
-
-        if (
-            containsAny(CategoryText, {"identity/principal"})
-            && containsAny(OperationText, {"privilege_identity_transition", "trust_config_lookup", "auth_policy_gate"})
-        ) {
-            Score += 3;
-        }
-
-        if (
-            containsAny(CategoryText, {"filesystem namespace state"})
-            && containsAny(OperationText, {"filesystem_namespace_transition", "path_file_resolution", "trust_config_lookup"})
-        ) {
-            Score += 3;
-        }
-
-        if (
-            containsAny(CategoryText, {"trust/config lookup"})
-            && containsAny(OperationText, {"trust_config_lookup", "dynamic_code_loading", "auth_policy_gate"})
-        ) {
-            Score += 3;
-        }
-
-        if (
-            containsAny(CategoryText, {"auth/policy decision"})
-            && containsAny(OperationText, {"auth_policy_gate", "privilege_identity_transition", "trust_config_lookup"})
-        ) {
-            Score += 3;
-        }
-
-        if (
-            containsAny(CategoryText, {"environment/runtime context"})
-            && containsAny(OperationText, {"environment_runtime_context", "dynamic_code_loading", "trust_config_lookup"})
-        ) {
-            Score += 3;
-        }
-
-        if (
-            containsAny(CategoryText, {"crypto/certificate state"})
-            && containsAny(OperationText, {"crypto_certificate_validation", "parser_decoder"})
-        ) {
-            Score += 3;
-        }
-
-        return std::min(Score, 8);
+        return std::min(Score, 6);
     }
 
     static std::vector<std::string> neutralizeCalleeSignals(const std::vector<std::string> &Signals) {
@@ -1123,16 +626,13 @@ private:
             else if (Signal == "stack manipulation") Neutral.push_back("stack operation");
             else Neutral.push_back(Signal);
         }
-
         return uniqueStrings(Neutral);
     }
-
 
     static CalleeEdge buildCalleeEdge(const CallInfo &Call, const std::map<std::string, FunctionInfo *> &ByName) {
         auto It = ByName.find(Call.calleeName);
         std::string CalleeCode = (It != ByName.end()) ? It->second->code : "";
         std::vector<std::string> Signals = detectDangerSignals(Call.calleeName, CalleeCode);
-        std::vector<OperationSignal> OperationSignals = detectOperationSignals(Call.calleeName, CalleeCode);
 
         CalleeEdge Edge;
         Edge.funcName = Call.calleeName;
@@ -1140,33 +640,16 @@ private:
         Edge.argumentCategories = classifyArgumentCategories(Call.argTexts);
         Edge.dangerSignals = Signals;
         Edge.localSignals = neutralizeCalleeSignals(Signals);
-        // New taxonomy-guided fields
-        Edge.operationSignals = OperationSignals;
-        Edge.operationClasses = extractOperationClasses(OperationSignals);
-        Edge.cweFamilies = extractCweFamilies(OperationSignals);
-        Edge.relevance = summarizeCalleeRelevance(Signals, Edge.operationClasses);
-        Edge.roleHint = summarizeCalleeRoleHint(Signals, Edge.operationClasses);
-
+        Edge.relevance = summarizeCalleeRelevance(Signals);
+        Edge.roleHint = summarizeCalleeRoleHint(Signals);
         Edge.argumentFlowScore = scoreCalleeArgumentFlow(Edge.argumentCategories);
-        Edge.roleMatchScore = scoreCalleeRoleMatch(Edge.funcName, Edge.argumentCategories, Signals, OperationSignals);
+        Edge.roleMatchScore = scoreCalleeRoleMatch(Edge.funcName, Edge.argumentCategories, Signals);
         Edge.dangerSignalScore = scoreCalleeDangerSignals(Signals);
-        Edge.operationSignalScore = scoreCalleeOperationSignals(OperationSignals);
-        Edge.securityContextScore = scoreSecurityContext(Edge.funcName, CalleeCode);
-
-        // New relevance formula:
-        Edge.relevanceScore = Edge.argumentFlowScore + Edge.roleMatchScore + Edge.dangerSignalScore + Edge.securityContextScore;
-
-        // Cleanup/free helpers are useful supporting context,
-        // but should not dominate top-k unless they contain high-value security operations.
-        if (isCleanupOrFreeHelper(Edge.funcName) &&
-            !hasHighValueSecurityOperation(Edge.operationClasses)) {
-            Edge.relevanceScore = std::min(Edge.relevanceScore, 10);
-        }     
-        
+        Edge.relevanceScore = Edge.argumentFlowScore + Edge.roleMatchScore + Edge.dangerSignalScore;
         return Edge;
     }
 
-    static constexpr size_t kMaxCallContextEdges = 5;
+    static constexpr size_t kMaxCallContextEdges = 3;
 
     static std::vector<CalleeEdge> selectTopCallees(const std::vector<CalleeEdge> &Edges) {
         std::vector<CalleeEdge> Ranked;
@@ -1177,11 +660,8 @@ private:
             if (A.relevanceScore != B.relevanceScore) return A.relevanceScore > B.relevanceScore;
             if (A.argumentFlowScore != B.argumentFlowScore) return A.argumentFlowScore > B.argumentFlowScore;
             if (A.roleMatchScore != B.roleMatchScore) return A.roleMatchScore > B.roleMatchScore;
-            if (A.operationSignalScore != B.operationSignalScore) return A.operationSignalScore > B.operationSignalScore;
-            if (A.securityContextScore != B.securityContextScore) return A.securityContextScore > B.securityContextScore;
-            return A.funcName < B.funcName; // Tie-breaker for consistent ordering
+            return A.dangerSignalScore < B.dangerSignalScore;
         });
-
         if (Ranked.size() > kMaxCallContextEdges) Ranked.resize(kMaxCallContextEdges);
         return Ranked;
     }
@@ -1198,14 +678,9 @@ private:
             std::string Args = Edge.argTexts.empty() ? "none" : joinStrings(Edge.argTexts, ", ");
             std::string Categories = Edge.argumentCategories.empty() ? "unclear from syntax" : joinStrings(Edge.argumentCategories, ", ");
             std::string Signals = Edge.localSignals.empty() ? "none observed" : joinStrings(Edge.localSignals, ", ");
-            std::string Ops = Edge.operationClasses.empty() ? "none observed" : joinStrings(Edge.operationClasses, ", ");
-            std::string Families = Edge.cweFamilies.empty() ? "none observed" : joinStrings(Edge.cweFamilies, ", ");
-
             Lines.push_back("Calls " + Edge.funcName + " with arguments: " + Args + ".");
             Lines.push_back("Passed argument categories: " + Categories + ".");
             Lines.push_back("Callee has local signals: " + Signals + ".");
-            Lines.push_back("Callee has operation signals: " + Ops + ".");
-            Lines.push_back("Callee has CWE families: " + Families + ".");
         }
         Lines.push_back("Note: callee signals are downstream evidence only unless the callee return value controls current-function progress.");
         return Lines;
@@ -1229,24 +704,14 @@ private:
             Lines.push_back("No cross-function direct evidence was detected in the current function body.");
         } else {
             for (const auto &Evidence : EvidenceList) {
-                if (Evidence.kind == "security_boundary_transition_around_resolution") {
-                    Lines.push_back(
-                        "Current function performs " + Evidence.expression +
-                        "; treat this security ordering as direct current-function evidence, not merely callee supporting evidence."
-                    );
-                    Lines.push_back(
-                        "Pattern: boundary transition -> name/path/command/authority-dependent resolution."
-                    );
-                } else {
-                    Lines.push_back(
-                        "Current function updates " + Evidence.lhs +
-                        " using return value from " + Evidence.calleeName +
-                        "; treat this as direct current-function evidence, not merely callee supporting evidence."
-                    );
-                    Lines.push_back(
-                        "Pattern: callee return value -> current loop/index/progress variable -> next traversal step."
-                    );
-                }
+                Lines.push_back(
+                    "Current function updates " + Evidence.lhs +
+                    " using return value from " + Evidence.calleeName +
+                    "; treat this as direct current-function evidence, not merely callee supporting evidence."
+                );
+                Lines.push_back(
+                    "Pattern: callee return value -> current loop/index/progress variable -> next traversal step."
+                );
             }
         }
 
@@ -1265,7 +730,7 @@ private:
                << "\"bound_check_observed\": " << (Evidence.boundCheckObserved ? "true" : "false") << ", "
                << "\"evidence_strength\": \"" << escapeJson(Evidence.evidenceStrength) << "\", "
                << "\"explanation\": \"" << escapeJson(Evidence.explanation) << "\", "
-               << "\"ranking_effect\": \"may increase root_cause_likelihood, decision_or_validation_risk, state_ordering_consistency_risk, and failure_trigger_plausibility when current-function ordering controls traversal, authority, or resolution semantics\""
+               << "\"ranking_effect\": \"may increase root_cause_specificity, state_or_length_consistency_risk, and failure_trigger_likelihood when the update can desynchronize traversal\""
                << "}";
         }
 
@@ -1367,40 +832,21 @@ private:
         for (size_t I = 0; I < TopEdges.size(); ++I) {
             if (I) OS << ", ";
             OS << "{"
-                << "\"func_name\": \"" << escapeJson(TopEdges[I].funcName) << "\", "
-                << "\"role_hint\": \"" << escapeJson(TopEdges[I].roleHint) << "\", "
-                << "\"relevance\": \"" << escapeJson(TopEdges[I].relevance) << "\", "
-                << "\"arg_texts\": " << buildJsonStringArray(TopEdges[I].argTexts) << ", "
-                << "\"argument_categories\": " << buildJsonStringArray(TopEdges[I].argumentCategories) << ", "
-
-                // Existing fields
-                << "\"local_signals\": " << buildJsonStringArray(TopEdges[I].localSignals) << ", "
-
-                // New taxonomy-guided fields
-                << "\"operation_signals\": " << buildJsonStringArray(TopEdges[I].operationClasses) << ", "
-                << "\"weakness_families\": " << buildJsonStringArray(TopEdges[I].cweFamilies) << ", "
-                << "\"operation_classes\": " << buildJsonStringArray(TopEdges[I].operationClasses) << ", "
-                << "\"cwe_families\": " << buildJsonStringArray(TopEdges[I].cweFamilies) << ", "
-
-                << "\"evidence_scope\": \"" << escapeJson(TopEdges[I].evidenceScope) << "\", "
-                << "\"is_current_function_evidence\": " << (TopEdges[I].isCurrentFunctionEvidence ? "true" : "false") << ", "
-                << "\"is_downstream_evidence\": " << (TopEdges[I].isDownstreamEvidence ? "true" : "false") << ", "
-                << "\"downstream_signal_hint\": " << buildJsonStringArray(TopEdges[I].dangerSignals) << ", "
-
-                // Existing scores
-                << "\"argument_flow_score\": " << TopEdges[I].argumentFlowScore << ", "
-                << "\"role_match_score\": " << TopEdges[I].roleMatchScore << ", "
-                << "\"local_signal_score\": " << TopEdges[I].dangerSignalScore << ", "
-
-                // New taxonomy-guided scores
-                << "\"operation_signal_score\": " << TopEdges[I].operationSignalScore << ", "
-                << "\"security_context_score\": " << TopEdges[I].securityContextScore << ", "
-
-                // Final callee relevance score
-                << "\"relevance_score\": " << TopEdges[I].relevanceScore
-                << "}";
-
-            
+               << "\"func_name\": \"" << escapeJson(TopEdges[I].funcName) << "\", "
+               << "\"role_hint\": \"" << escapeJson(TopEdges[I].roleHint) << "\", "
+               << "\"relevance\": \"" << escapeJson(TopEdges[I].relevance) << "\", "
+               << "\"arg_texts\": " << buildJsonStringArray(TopEdges[I].argTexts) << ", "
+               << "\"argument_categories\": " << buildJsonStringArray(TopEdges[I].argumentCategories) << ", "
+               << "\"local_signals\": " << buildJsonStringArray(TopEdges[I].localSignals) << ", "
+               << "\"evidence_scope\": \"" << escapeJson(TopEdges[I].evidenceScope) << "\", "
+               << "\"is_current_function_evidence\": " << (TopEdges[I].isCurrentFunctionEvidence ? "true" : "false") << ", "
+               << "\"is_downstream_evidence\": " << (TopEdges[I].isDownstreamEvidence ? "true" : "false") << ", "
+               << "\"downstream_signal_hint\": " << buildJsonStringArray(TopEdges[I].dangerSignals) << ", "
+               << "\"argument_flow_score\": " << TopEdges[I].argumentFlowScore << ", "
+               << "\"role_match_score\": " << TopEdges[I].roleMatchScore << ", "
+               << "\"local_signal_score\": " << TopEdges[I].dangerSignalScore << ", "
+               << "\"relevance_score\": " << TopEdges[I].relevanceScore
+               << "}";
         }
         OS << "]}";
         return OS.str();

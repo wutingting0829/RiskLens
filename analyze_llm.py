@@ -43,9 +43,53 @@ def model_supports_temperature(model: str) -> bool:
 # =========================
 # LLM 輸出格式定義
 # =========================
+WeaknessFamily = Literal[
+    "memory_safety",
+    "integer_size",
+    "input_validation_parser",
+    "path_file_resource",
+    "privilege_access_control",
+    "trust_boundary_security_decision",
+    "protection_mechanism_failure",
+    "race_ordering_toctou",
+    "injection_command_execution",
+    "crypto_auth_certificate",
+    "resource_lifecycle",
+    "other_uncertain",
+]
+
+OperationSignal = Literal[
+    "memory_write",
+    "memory_read",
+    "pointer_lifetime",
+    "size_index_arithmetic",
+    "allocation_lifetime",
+    "parser_decoder",
+    "path_file_resolution",
+    "command_execution",
+    "privilege_identity_transition",
+    "filesystem_namespace_transition",
+    "trust_config_lookup",
+    "dynamic_code_loading",
+    "auth_policy_gate",
+    "protection_mechanism_enforcement",
+    "crypto_certificate_validation",
+    "race_ordering",
+    "environment_runtime_context",
+    "resource_limit_lifecycle",
+    "other_uncertain",
+]
+
+
 class Evidence(BaseModel):
     line: Optional[int] = Field(None, description="Line number if available")
     snippet: str = Field(..., description="Exact code snippet from the source that supports the claim.")
+
+
+class VulnerabilityType(BaseModel):
+    family_id: WeaknessFamily = Field(..., description="Fixed weakness family identifier from the whitelist.")
+    name: str = Field(..., description="Short standard weakness name, preferably aligned with CWE naming.")
+    cwe_id: Optional[str] = Field(None, description="Optional concrete CWE ID such as CWE-787 when justified by code evidence.")
 
 
 class LLMFactorResult(BaseModel):
@@ -57,21 +101,23 @@ class LLMFactorResult(BaseModel):
     confidentiality: Literal["H", "L", "N"] = Field(..., description="CVSS v3.1 Confidentiality impact: H/L/N.")
     integrity: Literal["H", "L", "N"] = Field(..., description="CVSS v3.1 Integrity impact: H/L/N.")
     availability: Literal["H", "L", "N"] = Field(..., description="CVSS v3.1 Availability impact: H/L/N.")
-    root_cause_specificity: float = Field(
+    root_cause_likelihood: float = Field(
         ...,
         ge=0.0,
         le=1.0,
-        description="How specifically this function appears to be the vulnerability root-cause candidate (0.0 to 1.0).",
+        description="How likely this function contains or controls the vulnerability root cause (0.0 to 1.0).",
     )
-    input_reachability: float = Field(..., ge=0.0, le=1.0, description="How plausibly external, parser-derived, or user-controlled input reaches the function.")
-    validation_or_gatekeeping_weakness: float = Field(..., ge=0.0, le=1.0, description="How strongly the function shows weak validation or controls a semantic accept/reject gatekeeper decision.")
-    state_or_length_consistency_risk: float = Field(..., ge=0.0, le=1.0, description="How strongly the function can affect parser state, length/remaining/consumed consistency, or parser progress.")
-    failure_trigger_likelihood: float = Field(..., ge=0.0, le=1.0, description="How plausibly malformed input can trigger the suspected failure mode through this function.")
-    memory_or_data_structure_relevance: float = Field(..., ge=0.0, le=1.0, description="How relevant memory, buffer, allocation, indexing, stack, or data-structure behavior is to this function.")
+    input_exposure: float = Field(..., ge=0.0, le=1.0, description="How plausibly attacker-controlled, external, file, command, environment, parser-derived, or policy-derived input reaches the function.")
+    decision_or_validation_risk: float = Field(..., ge=0.0, le=1.0, description="How strongly the function performs weak validation, semantic acceptance, authorization, policy, trust, or continuation decisions.")
+    state_ordering_consistency_risk: float = Field(..., ge=0.0, le=1.0, description="How strongly the function can affect security-sensitive state, ordering, parser progress, length consistency, authority state, namespace state, or check/use ordering.")
+    failure_trigger_plausibility: float = Field(..., ge=0.0, le=1.0, description="How plausibly malformed or attacker-controlled input can trigger the suspected failure mode through this function.")
+    security_boundary_relevance: float = Field(..., ge=0.0, le=1.0, description="How relevant memory, authority, path, command, trust-boundary, crypto/auth, resource, or protection-boundary behavior is to this function.")
     evidence_strength: float = Field(..., ge=0.0, le=1.0, description="How strong the function-level evidence is, independent of final severity.")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence level in this factor assessment (0.0 to 1.0).")
-    vulnerability_types: List[str] = Field(..., description="List of potential vulnerability categories.")
-    reasons: List[str] = Field(..., min_length=1, description="Concise reasons explaining the selected factors and root-cause specificity.")
+    vulnerability_types: List[VulnerabilityType] = Field(..., description="Structured potential vulnerability categories.")
+    weakness_families: List[WeaknessFamily] = Field(..., description="Fixed weakness-family whitelist entries supported by code evidence.")
+    operation_signals: List[OperationSignal] = Field(..., description="Fixed security-operation signal categories supported by code evidence.")
+    reasons: List[str] = Field(..., min_length=1, description="Concise reasons explaining the selected CVSS factors, proxy factors, root-cause likelihood, and confidence.")
     evidence: List[Evidence] = Field(default_factory=list, description="List of evidence snippets.")
 
 
@@ -273,17 +319,17 @@ def compute_prioritization_score(factors: LLMFactorResult, severity_score: float
     root-cause locality and observable code proxies drive the ranking.
     """
     score = (
-        0.28 * factors.root_cause_specificity
-        + 0.16 * factors.input_reachability
-        + 0.16 * factors.validation_or_gatekeeping_weakness
-        + 0.14 * factors.state_or_length_consistency_risk
-        + 0.10 * factors.failure_trigger_likelihood
-        + 0.08 * factors.memory_or_data_structure_relevance
+        0.28 * factors.root_cause_likelihood
+        + 0.16 * factors.input_exposure
+        + 0.16 * factors.decision_or_validation_risk
+        + 0.14 * factors.state_ordering_consistency_risk
+        + 0.10 * factors.failure_trigger_plausibility
+        + 0.08 * factors.security_boundary_relevance
         + 0.07 * factors.evidence_strength
         + 0.01 * (severity_score / 10.0)
     )
     if (
-        factors.validation_or_gatekeeping_weakness >= GATEKEEPER_BONUS_GATE_THRESHOLD
+        factors.decision_or_validation_risk >= GATEKEEPER_BONUS_GATE_THRESHOLD
         and factors.evidence_strength >= GATEKEEPER_BONUS_EVIDENCE_THRESHOLD
     ):
         score += GATEKEEPER_BONUS
@@ -346,13 +392,13 @@ def needs_impact_consistency_review(factors: LLMFactorResult) -> bool:
         return False
 
     return (
-        factors.root_cause_specificity >= 0.45
+        factors.root_cause_likelihood >= 0.45
         and factors.evidence_strength >= 0.45
         and (
-            factors.memory_or_data_structure_relevance >= 0.35
-            or factors.validation_or_gatekeeping_weakness >= 0.45
-            or factors.state_or_length_consistency_risk >= 0.45
-            or factors.failure_trigger_likelihood >= 0.45
+            factors.security_boundary_relevance >= 0.35
+            or factors.decision_or_validation_risk >= 0.45
+            or factors.state_ordering_consistency_risk >= 0.45
+            or factors.failure_trigger_plausibility >= 0.45
         )
     )
 
@@ -375,15 +421,17 @@ def build_score_payload(report_path: str) -> dict:
                 "severity_score": analysis.get("severity_score"),
                 "risk_score": analysis.get("risk_score"),
                 "cvss_vector": analysis.get("cvss_vector"),
-                "root_cause_specificity": analysis.get("root_cause_specificity"),
-                "input_reachability": analysis.get("input_reachability"),
-                "validation_or_gatekeeping_weakness": analysis.get("validation_or_gatekeeping_weakness"),
-                "state_or_length_consistency_risk": analysis.get("state_or_length_consistency_risk"),
-                "failure_trigger_likelihood": analysis.get("failure_trigger_likelihood"),
-                "memory_or_data_structure_relevance": analysis.get("memory_or_data_structure_relevance"),
+                "root_cause_likelihood": analysis.get("root_cause_likelihood"),
+                "input_exposure": analysis.get("input_exposure"),
+                "decision_or_validation_risk": analysis.get("decision_or_validation_risk"),
+                "state_ordering_consistency_risk": analysis.get("state_ordering_consistency_risk"),
+                "failure_trigger_plausibility": analysis.get("failure_trigger_plausibility"),
+                "security_boundary_relevance": analysis.get("security_boundary_relevance"),
                 "evidence_strength": analysis.get("evidence_strength"),
                 "confidence": analysis.get("confidence"),
                 "vulnerability_types": analysis.get("vulnerability_types", []),
+                "weakness_families": analysis.get("weakness_families", []),
+                "operation_signals": analysis.get("operation_signals", []),
             }
         )
 
@@ -642,15 +690,15 @@ def assign_ranks(entries: List[dict]) -> Dict[str, int]:
         analysis = item.get("analysis") or {}
         score = analysis.get("prioritization_score")
         if isinstance(score, (int, float)) and not math.isnan(score):
-            root_cause_specificity = analysis.get("root_cause_specificity")
-            validation_or_gatekeeping_weakness = analysis.get("validation_or_gatekeeping_weakness")
+            root_cause_likelihood = analysis.get("root_cause_likelihood")
+            decision_or_validation_risk = analysis.get("decision_or_validation_risk")
             severity_score = analysis.get("severity_score")
             confidence = analysis.get("confidence")
-            root_value = float(root_cause_specificity) if isinstance(root_cause_specificity, (int, float)) else 0.0
-            gatekeeper_value = float(validation_or_gatekeeping_weakness) if isinstance(validation_or_gatekeeping_weakness, (int, float)) else 0.0
+            root_value = float(root_cause_likelihood) if isinstance(root_cause_likelihood, (int, float)) else 0.0
+            decision_value = float(decision_or_validation_risk) if isinstance(decision_or_validation_risk, (int, float)) else 0.0
             severity_value = float(severity_score) if isinstance(severity_score, (int, float)) else 0.0
             confidence_value = float(confidence) if isinstance(confidence, (int, float)) else 0.0
-            sortable.append((item["_key"], float(score), root_value, gatekeeper_value, severity_value, confidence_value))
+            sortable.append((item["_key"], float(score), root_value, decision_value, severity_value, confidence_value))
 
     sortable.sort(key=lambda pair: (-pair[1], -pair[2], -pair[3], -pair[4], -pair[5], pair[0]))
     return {key: index for index, (key, _score, _root, _gatekeeper, _severity, _confidence) in enumerate(sortable, 1)}
@@ -680,12 +728,12 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
             "record": rec,
             "prioritization_scores": [],
             "severity_scores": [],
-            "root_cause_specificities": [],
-            "input_reachabilities": [],
-            "validation_or_gatekeeping_weaknesses": [],
-            "state_or_length_consistency_risks": [],
-            "failure_trigger_likelihoods": [],
-            "memory_or_data_structure_relevances": [],
+            "root_cause_likelihoods": [],
+            "input_exposures": [],
+            "decision_or_validation_risks": [],
+            "state_ordering_consistency_risks": [],
+            "failure_trigger_plausibilities": [],
+            "security_boundary_relevances": [],
             "evidence_strengths": [],
             "confidences": [],
             "cvss_vectors": [],
@@ -713,15 +761,15 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
             severity_score = analysis.get("severity_score")
             if isinstance(severity_score, (int, float)) and not math.isnan(severity_score):
                 by_function[key]["severity_scores"].append(float(severity_score))
-            root_cause_specificity = analysis.get("root_cause_specificity")
-            if isinstance(root_cause_specificity, (int, float)) and not math.isnan(root_cause_specificity):
-                by_function[key]["root_cause_specificities"].append(float(root_cause_specificity))
+            root_cause_likelihood = analysis.get("root_cause_likelihood")
+            if isinstance(root_cause_likelihood, (int, float)) and not math.isnan(root_cause_likelihood):
+                by_function[key]["root_cause_likelihoods"].append(float(root_cause_likelihood))
             for field_name, bucket_name in [
-                ("input_reachability", "input_reachabilities"),
-                ("validation_or_gatekeeping_weakness", "validation_or_gatekeeping_weaknesses"),
-                ("state_or_length_consistency_risk", "state_or_length_consistency_risks"),
-                ("failure_trigger_likelihood", "failure_trigger_likelihoods"),
-                ("memory_or_data_structure_relevance", "memory_or_data_structure_relevances"),
+                ("input_exposure", "input_exposures"),
+                ("decision_or_validation_risk", "decision_or_validation_risks"),
+                ("state_ordering_consistency_risk", "state_ordering_consistency_risks"),
+                ("failure_trigger_plausibility", "failure_trigger_plausibilities"),
+                ("security_boundary_relevance", "security_boundary_relevances"),
             ]:
                 value = analysis.get(field_name)
                 if isinstance(value, (int, float)) and not math.isnan(value):
@@ -747,12 +795,12 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
         priority_stdev = stdev_or_zero(info["prioritization_scores"])
         avg_severity = mean_or_zero(info["severity_scores"])
         severity_stdev = stdev_or_zero(info["severity_scores"])
-        avg_root_cause_specificity = mean_or_zero(info["root_cause_specificities"])
-        avg_input_reachability = mean_or_zero(info["input_reachabilities"])
-        avg_validation_or_gatekeeping_weakness = mean_or_zero(info["validation_or_gatekeeping_weaknesses"])
-        avg_state_or_length_consistency_risk = mean_or_zero(info["state_or_length_consistency_risks"])
-        avg_failure_trigger_likelihood = mean_or_zero(info["failure_trigger_likelihoods"])
-        avg_memory_or_data_structure_relevance = mean_or_zero(info["memory_or_data_structure_relevances"])
+        avg_root_cause_likelihood = mean_or_zero(info["root_cause_likelihoods"])
+        avg_input_exposure = mean_or_zero(info["input_exposures"])
+        avg_decision_or_validation_risk = mean_or_zero(info["decision_or_validation_risks"])
+        avg_state_ordering_consistency_risk = mean_or_zero(info["state_ordering_consistency_risks"])
+        avg_failure_trigger_plausibility = mean_or_zero(info["failure_trigger_plausibilities"])
+        avg_security_boundary_relevance = mean_or_zero(info["security_boundary_relevances"])
         avg_evidence_strength = mean_or_zero(info["evidence_strengths"])
         avg_confidence = mean_or_zero(info["confidences"])
         avg_rank = mean_or_zero(info["ranks"])
@@ -775,12 +823,12 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
                 "severity_score_stddev": round_metric(severity_stdev),
                 "average_risk_score": round_metric(avg_severity),
                 "risk_score_stddev": round_metric(severity_stdev),
-                "average_root_cause_specificity": round_metric(avg_root_cause_specificity),
-                "average_input_reachability": round_metric(avg_input_reachability),
-                "average_validation_or_gatekeeping_weakness": round_metric(avg_validation_or_gatekeeping_weakness),
-                "average_state_or_length_consistency_risk": round_metric(avg_state_or_length_consistency_risk),
-                "average_failure_trigger_likelihood": round_metric(avg_failure_trigger_likelihood),
-                "average_memory_or_data_structure_relevance": round_metric(avg_memory_or_data_structure_relevance),
+                "average_root_cause_likelihood": round_metric(avg_root_cause_likelihood),
+                "average_input_exposure": round_metric(avg_input_exposure),
+                "average_decision_or_validation_risk": round_metric(avg_decision_or_validation_risk),
+                "average_state_ordering_consistency_risk": round_metric(avg_state_ordering_consistency_risk),
+                "average_failure_trigger_plausibility": round_metric(avg_failure_trigger_plausibility),
+                "average_security_boundary_relevance": round_metric(avg_security_boundary_relevance),
                 "average_evidence_strength": round_metric(avg_evidence_strength),
                 "average_confidence": round_metric(avg_confidence),
                 "average_rank": round_metric(avg_rank),
@@ -788,12 +836,12 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
                 "run_prioritization_scores": [round_metric(v) for v in info["prioritization_scores"]],
                 "run_severity_scores": [round_metric(v) for v in info["severity_scores"]],
                 "run_scores": [round_metric(v) for v in info["severity_scores"]],
-                "run_root_cause_specificities": [round_metric(v) for v in info["root_cause_specificities"]],
-                "run_input_reachabilities": [round_metric(v) for v in info["input_reachabilities"]],
-                "run_validation_or_gatekeeping_weaknesses": [round_metric(v) for v in info["validation_or_gatekeeping_weaknesses"]],
-                "run_state_or_length_consistency_risks": [round_metric(v) for v in info["state_or_length_consistency_risks"]],
-                "run_failure_trigger_likelihoods": [round_metric(v) for v in info["failure_trigger_likelihoods"]],
-                "run_memory_or_data_structure_relevances": [round_metric(v) for v in info["memory_or_data_structure_relevances"]],
+                "run_root_cause_likelihoods": [round_metric(v) for v in info["root_cause_likelihoods"]],
+                "run_input_exposures": [round_metric(v) for v in info["input_exposures"]],
+                "run_decision_or_validation_risks": [round_metric(v) for v in info["decision_or_validation_risks"]],
+                "run_state_ordering_consistency_risks": [round_metric(v) for v in info["state_ordering_consistency_risks"]],
+                "run_failure_trigger_plausibilities": [round_metric(v) for v in info["failure_trigger_plausibilities"]],
+                "run_security_boundary_relevances": [round_metric(v) for v in info["security_boundary_relevances"]],
                 "run_confidences": [round_metric(v) for v in info["confidences"]],
                 "run_ranks": [round_metric(v) for v in info["ranks"]],
                 "run_cvss_vectors": info["cvss_vectors"],
@@ -806,8 +854,8 @@ def summarize_runs(records: List[dict], all_run_results: List[dict], runs: int, 
     summary_rows.sort(
         key=lambda row: (
             -row["average_prioritization_score"],
-            -row["average_root_cause_specificity"],
-            -row["average_validation_or_gatekeeping_weakness"],
+            -row["average_root_cause_likelihood"],
+            -row["average_decision_or_validation_risk"],
             -row["average_severity_score"],
             -row["average_confidence"],
             row["average_rank"] if row["average_rank"] else float("inf"),
@@ -847,7 +895,7 @@ def write_baseline_summary_table(path: str, payload: dict) -> None:
         f"- Overall average severity score: {payload['overall_average_severity_score']}",
         f"- Overall average rank volatility: {payload['overall_average_rank_volatility']}",
         "",
-        "| Rank | Function | Priority | Priority Stddev | Severity | Root Cause | Reach | Validation/Gate | State/Length | Failure | Memory/Data | Evidence | Confidence | Avg Rank | Rank Volatility | Completed Runs |",
+        "| Rank | Function | Priority | Priority Stddev | Severity | Root Cause | Input | Decision | State/Ordering | Failure | Boundary | Evidence | Confidence | Avg Rank | Rank Volatility | Completed Runs |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
@@ -856,10 +904,10 @@ def write_baseline_summary_table(path: str, payload: dict) -> None:
         lines.append(
             f"| {idx} | {function_label} | {row['average_prioritization_score']:.4f} | "
             f"{row['prioritization_score_stddev']:.4f} | {row['average_severity_score']:.4f} | "
-            f"{row['average_root_cause_specificity']:.4f} | {row['average_input_reachability']:.4f} | "
-            f"{row['average_validation_or_gatekeeping_weakness']:.4f} | "
-            f"{row['average_state_or_length_consistency_risk']:.4f} | {row['average_failure_trigger_likelihood']:.4f} | "
-            f"{row['average_memory_or_data_structure_relevance']:.4f} | "
+            f"{row['average_root_cause_likelihood']:.4f} | {row['average_input_exposure']:.4f} | "
+            f"{row['average_decision_or_validation_risk']:.4f} | "
+            f"{row['average_state_ordering_consistency_risk']:.4f} | {row['average_failure_trigger_plausibility']:.4f} | "
+            f"{row['average_security_boundary_relevance']:.4f} | "
             f"{row['average_evidence_strength']:.4f} | {row['average_confidence']:.4f} | {row['average_rank']:.4f} | "
             f"{row['rank_volatility']:.4f} | {row['runs_completed']}/{row['runs_expected']} |"
         )
@@ -909,12 +957,12 @@ def print_single_run_rank_summary(run_results: List[dict]) -> None:
                 "line_end": item.get("line_end"),
                 "priority": metric(analysis.get("prioritization_score")),
                 "severity": metric(analysis.get("severity_score")),
-                "root": metric(analysis.get("root_cause_specificity")),
-                "reach": metric(analysis.get("input_reachability")),
-                "gate": metric(analysis.get("validation_or_gatekeeping_weakness")),
-                "state_length": metric(analysis.get("state_or_length_consistency_risk")),
-                "failure": metric(analysis.get("failure_trigger_likelihood")),
-                "memory": metric(analysis.get("memory_or_data_structure_relevance")),
+                "root": metric(analysis.get("root_cause_likelihood")),
+                "input": metric(analysis.get("input_exposure")),
+                "decision": metric(analysis.get("decision_or_validation_risk")),
+                "state_ordering": metric(analysis.get("state_ordering_consistency_risk")),
+                "failure": metric(analysis.get("failure_trigger_plausibility")),
+                "boundary": metric(analysis.get("security_boundary_relevance")),
                 "evidence": metric(analysis.get("evidence_strength")),
                 "confidence": metric(analysis.get("confidence")),
                 "vector": analysis.get("cvss_vector") or "",
@@ -929,7 +977,7 @@ def print_single_run_rank_summary(run_results: List[dict]) -> None:
     print("\nFinal Ranking Summary")
     print(
         f"{'Rank':>4}  {'Priority':>8}  {'Severity':>8}  {'Root':>6}  {'State':>6}  "
-        f"{'Reach':>6}  {'Gate':>6}  {'Fail':>6}  {'Mem':>6}  {'Evid':>6}  {'Conf':>6}  {'C/I/A':>5}  Function"
+        f"{'Input':>6}  {'Dec':>6}  {'Fail':>6}  {'Bound':>6}  {'Evid':>6}  {'Conf':>6}  {'C/I/A':>5}  Function"
     )
     print(
         f"{'-' * 4}  {'-' * 8}  {'-' * 8}  {'-' * 6}  {'-' * 6}  "
@@ -940,8 +988,8 @@ def print_single_run_rank_summary(run_results: List[dict]) -> None:
         function_label = f"{row['func_name']} ({row['line_start']}-{row['line_end']})"
         print(
             f"{row['rank']:>4}  {row['priority']:>8.4f}  {row['severity']:>8.4f}  "
-            f"{row['root']:>6.4f}  {row['state_length']:>6.4f}  {row['reach']:>6.4f}  {row['gate']:>6.4f}  "
-            f"{row['failure']:>6.4f}  {row['memory']:>6.4f}  "
+            f"{row['root']:>6.4f}  {row['state_ordering']:>6.4f}  {row['input']:>6.4f}  {row['decision']:>6.4f}  "
+            f"{row['failure']:>6.4f}  {row['boundary']:>6.4f}  "
             f"{row['evidence']:>6.4f}  {row['confidence']:>6.4f}  "
             f"{cvss_cia_label(row['vector']):>5}  "
             f"{truncate_text(function_label, 48)}"
@@ -959,8 +1007,8 @@ def print_average_rank_summary(payload: dict) -> None:
         key=lambda row: (
             row["average_rank"] if row["average_rank"] else float("inf"),
             -row["average_prioritization_score"],
-            -row["average_root_cause_specificity"],
-            -row["average_validation_or_gatekeeping_weakness"],
+            -row["average_root_cause_likelihood"],
+            -row["average_decision_or_validation_risk"],
             row["func_name"] or "",
         ),
     )
@@ -972,7 +1020,7 @@ def print_average_rank_summary(payload: dict) -> None:
     print("\nAverage Rank Summary (lower avg rank is better)")
     print(
         f"{'Rank':>4}  {'AvgRank':>7}  {'Priority':>8}  {'Severity':>8}  {'Root':>6}  "
-        f"{'Reach':>6}  {'Gate':>6}  {'State':>6}  {'Fail':>6}  {'Mem':>6}  "
+        f"{'Input':>6}  {'Dec':>6}  {'State':>6}  {'Fail':>6}  {'Bound':>6}  "
         f"{'Evid':>6}  {'Conf':>6}  {'Vol':>6}  {'Runs':>7}  {'C/I/A':>5}  Function"
     )
     print(
@@ -988,12 +1036,12 @@ def print_average_rank_summary(payload: dict) -> None:
             f"{idx:>4}  {row['average_rank']:>7.4f}  "
             f"{row['average_prioritization_score']:>8.4f}  "
             f"{row['average_severity_score']:>8.4f}  "
-            f"{row['average_root_cause_specificity']:>6.4f}  "
-            f"{row['average_input_reachability']:>6.4f}  "
-            f"{row['average_validation_or_gatekeeping_weakness']:>6.4f}  "
-            f"{row['average_state_or_length_consistency_risk']:>6.4f}  "
-            f"{row['average_failure_trigger_likelihood']:>6.4f}  "
-            f"{row['average_memory_or_data_structure_relevance']:>6.4f}  "
+            f"{row['average_root_cause_likelihood']:>6.4f}  "
+            f"{row['average_input_exposure']:>6.4f}  "
+            f"{row['average_decision_or_validation_risk']:>6.4f}  "
+            f"{row['average_state_ordering_consistency_risk']:>6.4f}  "
+            f"{row['average_failure_trigger_plausibility']:>6.4f}  "
+            f"{row['average_security_boundary_relevance']:>6.4f}  "
             f"{row['average_evidence_strength']:>6.4f}  "
             f"{row['average_confidence']:>6.4f}  "
             f"{row['rank_volatility']:>6.4f}  {completed_runs:>7}  "

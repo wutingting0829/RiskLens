@@ -84,9 +84,19 @@ def format_call_context(rec: dict) -> str:
             evidence_scope = callee.get("evidence_scope", "downstream_only")
             is_current_evidence = callee.get("is_current_function_evidence", False)
             is_downstream_evidence = callee.get("is_downstream_evidence", True)
+            operation_signals = _join_or_default(
+                callee.get("operation_signals") or callee.get("operation_classes") or [],
+                "none observed",
+            )
+            weakness_families = _join_or_default(
+                callee.get("weakness_families") or callee.get("cwe_families") or [],
+                "none observed",
+            )
             lines.append(f"- Calls {callee.get('func_name', 'unknown')} with arguments: {arg_text}")
             lines.append(f"- Passed argument categories: {categories}")
             lines.append(f"- Callee has local signals: {_neutral_local_signals(callee)}")
+            lines.append(f"- Callee operation signals: {operation_signals}")
+            lines.append(f"- Callee weakness families: {weakness_families}")
             lines.append(
                 "- Evidence scope: "
                 f"{evidence_scope}; current_function_evidence={str(is_current_evidence).lower()}; "
@@ -119,7 +129,7 @@ def format_call_context(rec: dict) -> str:
     if current_signals:
         for signal in current_signals[:3]:
             lines.append(f"- {signal}")
-        lines.append("- Treat these as direct current-function evidence when the code shows parser cursor, loop index, offset, consumed/remaining length, or progress state being updated.")
+        lines.append("- Treat these as direct current-function evidence when the code shows parser cursor/progress updates or security-sensitive boundary-transition ordering around lookup/resolution.")
     else:
         lines.append("- none detected")
 

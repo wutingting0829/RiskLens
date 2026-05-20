@@ -221,10 +221,10 @@ cd /home/sense/func-extractor
   > input/cve-2025-32463-sudoers-function.jsonl
 
 python3 analyze_llm.py \
-  --in input/cve-2025-32463-sudoers-function.jsonl \
+  --in input/cve-2025-32463-sudoers-function_v2.jsonl \
   --runs 5 \
-  --out-dir outputs/cve-2025-32463-sudoers \
-  --score-json outputs/cve-2025-32463-sudoers/summary.json \
-  --model gpt-5.4-mini
+  --out-dir outputs/cve-2025-32463-sudoers-v2 \
+  --score-json outputs/cve-2025-32463-sudoers-v2/summary.json \
+  --model gpt-5.5
 
 ```
