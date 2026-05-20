@@ -201,3 +201,30 @@ python3 analyze_llm.py \
   --model gpt-5.5
 
 ```
+
+
+### Test Case - CVE-2025-32463 (sudoers.c)
+```
+cd /home/sense/func-extractor
+
+./build/func_extractor input/cve-2025-32463-sudoers.c -- \
+  -std=gnu11 \
+  -I/home/sense/sudo/build \
+  -I/home/sense/cve-2025-32463/sudo/include \
+  -I/home/sense/cve-2025-32463/sudo/lib/util \
+  -I/home/sense/cve-2025-32463/sudo/lib/eventlog \
+  -I/home/sense/cve-2025-32463/sudo/lib/iolog \
+  -I/home/sense/cve-2025-32463/sudo/plugins/sudoers \
+  -I/home/sense/cve-2025-32463/sudo/plugins/sudoers/. \
+  -I/home/sense/miniconda3/lib/clang/16/include \
+  -DLOCALEDIR='"/usr/share/locale"' \
+  > input/cve-2025-32463-sudoers-function.jsonl
+
+python3 analyze_llm.py \
+  --in input/cve-2025-32463-sudoers-function.jsonl \
+  --runs 5 \
+  --out-dir outputs/cve-2025-32463-sudoers \
+  --score-json outputs/cve-2025-32463-sudoers/summary.json \
+  --model gpt-5.4-mini
+
+```
