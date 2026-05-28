@@ -8,7 +8,6 @@ head -n 5 functions.jsonl //你應該會看到像這樣（每行一筆 JSON）
 export OPENAI_API_KEY=""
 python3 analyze_llm.py --in functions.jsonl --out risk_report.jsonl //跑 LLM（全部 functions 都評）
 python3 analyze_llm.py --in functions.jsonl --out risk_report.jsonl --topk 20 //只分析 Top-K（先用 baseline 做預篩）
-python3 analyze_llm.py --in functions.jsonl --out risk_report.jsonl --git --repo . //加上 git commit message（file-level）一起給 LLM （如果你在別的 repo 做分析，就把 --repo 指到那個 repo 根。）
 python3 analyze_llm.py --in functions.jsonl --out risk_report.jsonl // 目前 LLM 輸出採用估計的 CVSS v3.1 Base Score、Severity 與 CVSS vector
 python3 analyze_llm.py --in functions.jsonl --runs 5 --out-dir outputs/baseline // 同一批 function 自動重跑 5 次
 // outputs/baseline/run_001.jsonl ~ run_005.jsonl: 每次 run 的原始結果

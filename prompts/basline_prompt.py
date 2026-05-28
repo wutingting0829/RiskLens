@@ -1,9 +1,6 @@
-from typing import Optional
-
 from .prompt_utils import (
     format_call_context,
     format_function_metadata,
-    format_git_context,
     safe_code_block,
 )
 
@@ -23,7 +20,7 @@ SYSTEM_PROMPT = (
     "3) Distinguish between:\n"
     "   - a true root-cause candidate\n"
     "   - a function that only looks risky because it is parser-related or structurally complex\n"
-    "4) Ground all conclusions in the provided code and optional git context only.\n"
+    "4) Ground all conclusions in the provided code only.\n"
     "   Do NOT assume external code unless directly implied.\n"
     "5) If function-level evidence is insufficient to confirm a vulnerability, do not collapse every candidate to zero. "
     "Separate 'not vulnerable' from 'uncertain but plausible root-cause candidate'.\n\n"
@@ -96,11 +93,10 @@ def build_case_type_addons(rec: dict) -> str:
     return "\n".join(addons) + "\n"
 
 
-def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
+def build_user_prompt(rec: dict) -> str:
     meta = format_function_metadata(rec)
     call_context = format_call_context(rec)
     case_type_addons = build_case_type_addons(rec)
-    git_part = format_git_context(git_ctx)
     code_part = safe_code_block(rec.get("code", ""), language="c")
 
     security_spec = (
@@ -123,6 +119,8 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "- Do not confuse 'complex parser logic' with 'actual vulnerability root cause'.\n"
     )
 
+    # 告訴 LLM「這些 call context 應該怎麼用、不能怎麼用」。
+    # 負責限制 LLM 不要亂加分，只能在 call context 和目前 function code 形成具體證據時使用。
     call_context_guidance = (
         "[CALL CONTEXT USAGE]\n"
         "Use caller/callee context only as supporting evidence, not as an automatic score boost.\n"
@@ -243,23 +241,31 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
         "The family_id must be in weakness_families. Use cwe_id only for concrete CWE evidence; otherwise set it to null.\n"
     )
 
+    # 每個 proxy factor 由 LLM 依函式本身證據打 0.0-1.0 分數，讓使用者能夠區分真正的 root cause candidate 與僅僅是 parser-related 或 structurally complex 的函式。
     prioritization_rubric = (
         "[HYBRID ROOT-CAUSE PRIORITIZATION RUBRIC]\n"
         "Score each proxy from 0.0 to 1.0 using function-level observable evidence. "
         "These proxy scores are not CVSS metrics. They should focus on root-cause prioritization across vulnerability families, not generic parser complexity or generic security risk.\n\n"
 
+        # 這個 function 是否包含或控制核心 bug 邏輯的可能性。0.0-0.3 = 不太可能是 root cause；0.4-0.6 = 可能的候選；0.7-1.0 = 非常可能是 root cause。
         "- root_cause_likelihood: How likely this function contains or controls the core bug logic. "
         "0.0-0.3 = unlikely root cause; 0.4-0.6 = plausible candidate; 0.7-1.0 = highly likely root cause.\n"
+        # 攻擊者控制、外部檔案、command/env、parser-derived 或 policy-derived input 是否可能到這裡。
         "- input_exposure: Whether attacker-controlled, external, file, command, environment, parser-derived, or policy-derived input plausibly reaches this function. Use caller context only as a supporting hint, not as automatic proof.\n"
+        # 是否做 validation、allow/deny、semantic legality、authorization、trust、continue/stop 等關鍵決策，而且錯誤決策會讓危險流程繼續。
         "- decision_or_validation_risk: Whether validation, bounds checks, semantic policy checks, admissibility checks, authorization checks, trust decisions, or accept/reject decisions are weak, incomplete, too permissive, inverted, or security-critical.\n"
         "  A decision/gatekeeper function should receive a high decision_or_validation_risk score only when: "
         "1) it makes a semantic valid/invalid, allow/deny, trust/untrust, or continue/stop decision; "
         "2) that decision controls whether downstream parsing, authority changes, command/path resolution, or structure updates continue; "
         "3) a wrong decision would admit malformed or untrusted input into later security-sensitive processing; and "
         "4) this decision is local to the current function.\n"
+        # 是否影響 parser state、cursor/progress、length/state consistency、authority/root/cwd/namespace、check/use ordering 等狀態一致性。
         "- state_ordering_consistency_risk: Whether the function can affect parser state, cursor/progress, declared length, authority state, filesystem namespace/root/cwd, credential/group state, check/use ordering, lock/order invariants, or security-sensitive sequence constraints.\n"
+        # malformed 或 attacker-controlled input 是否可能經由此函式觸發失敗模式。
         "- failure_trigger_plausibility: Whether malformed, attacker-controlled, or untrusted input can plausibly trigger the suspected failure mode through this function, including unsafe acceptance/rejection or wrong security ordering.\n"
+        # 是否和 memory、authority、path/command resolution、trust boundary、crypto/auth、resource lifecycle、dangerous helper 有關。
         "- security_boundary_relevance: Whether the function directly or structurally relates to memory, authority, path, command, trust-boundary, crypto/auth, protection mechanism, resource lifecycle, or dangerous downstream helper use.\n"
+        # 函式層級證據強度，和最後漏洞嚴重度分開看。
         "- evidence_strength: How strong the local function-level evidence is, independent of how severe the final vulnerability might be.\n\n"
         "Conceptual proxy: progress_control_risk should be folded into root_cause_likelihood, state_ordering_consistency_risk, and failure_trigger_plausibility. "
         "It is high when the current function controls parser traversal, loop progress, cursor/index movement, consumed/remaining length, or state transition using values derived from helper calls or untrusted input. "
@@ -322,7 +328,6 @@ def build_user_prompt(rec: dict, git_ctx: Optional[dict] = None) -> str:
     return (
         meta
         + call_context
-        + git_part
         + "\n[CODE]\n"
         + code_part
         + "\n\n"

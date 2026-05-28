@@ -104,17 +104,17 @@ public:
         }
 
         for (const auto &Info : Functions) {
-            outs() << "{"
-                   << "\"file\" : \"" << escapeJson(Info.file) << "\", "
-                   << "\"func_name\": \"" << escapeJson(Info.funcName) << "\", "
-                   << "\"line_start\": " << Info.lineStart << ", "
-                   << "\"line_end\": " << Info.lineEnd << ", "
-                   << "\"caller_summary\": " << buildCallerSummaryJson(Info, CallersByCallee) << ", "
-                   << "\"callee_summary\": " << buildCalleeSummaryJson(Info, ByName) << ", "
-                   << "\"current_function_signals\": " << buildJsonStringArray(Info.currentFunctionSignals) << ", "
-                   << "\"cross_function_direct_evidence\": " << buildCrossFunctionDirectEvidenceJson(Info.crossFunctionDirectEvidence) << ", "
-                   << "\"code\": \"" << escapeJson(Info.code) << "\""
-                   << "}\n"; // JSONL 要求每筆資料最後要換行
+            outs() << "{\n"
+                   << "  \"file\": \"" << escapeJson(Info.file) << "\",\n"
+                   << "  \"func_name\": \"" << escapeJson(Info.funcName) << "\",\n"
+                   << "  \"line_start\": " << Info.lineStart << ",\n"
+                   << "  \"line_end\": " << Info.lineEnd << ",\n"
+                   << "  \"caller_summary\": " << buildCallerSummaryJson(Info, CallersByCallee) << ",\n"
+                   << "  \"callee_summary\": " << buildCalleeSummaryJson(Info, ByName) << ",\n"
+                   << "  \"current_function_signals\": " << buildJsonStringArray(Info.currentFunctionSignals) << ",\n". // 用來抓「危險不在 callee 本身，而在目前 function 如何使用 callee 結果控制 parser/state 進度」的訊號。
+                   << "  \"cross_function_direct_evidence\": " << buildCrossFunctionDirectEvidenceJson(Info.crossFunctionDirectEvidence) << ",\n" //  是專門用來抓「callee 回傳值被目前 function 拿來控制解析進度或狀態」的跨函式直接證據，避免 LLM 把這種 root cause 錯誤地歸到 callee 或忽略掉目前 function。
+                   << "  \"code\": \"" << escapeJson(Info.code) << "\"\n"
+                   << "}\n";
         }
     }
 
@@ -219,6 +219,7 @@ private:
             return true;
         }
 
+        // 會檢查 assignment 是否使用 call return來更新 loop/index 變數，這是 parser 進度控制的 strong signal。
         bool VisitBinaryOperator(BinaryOperator *BO) {
             if (!BO || !Info) return true;
             std::string LHS = getExprText(BO->getLHS(), Context->getSourceManager(), Context->getLangOpts());
@@ -234,6 +235,7 @@ private:
             Info->currentFunctionSignals.push_back(Signal);
             Info->currentFunctionSignals = uniqueStrings(Info->currentFunctionSignals);
 
+            //它不是一般的「callee 有危險操作」；它想標出 跨函式互動造成的 current-function direct evidence。
             DirectEvidence Evidence;
             Evidence.kind = "unchecked_callee_return_controls_loop_progress";
             Evidence.lhs = LHS;

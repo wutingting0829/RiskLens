@@ -4,7 +4,6 @@ import json
 import math
 import os
 import statistics
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -93,6 +92,7 @@ class VulnerabilityType(BaseModel):
 
 
 class LLMFactorResult(BaseModel):
+    # 定義function evidence 選 8 個 CVSS v3.1 Base Metrics
     attack_vector: Literal["N", "A", "L", "P"] = Field(..., description="CVSS v3.1 Attack Vector: N/A/L/P.")
     attack_complexity: Literal["L", "H"] = Field(..., description="CVSS v3.1 Attack Complexity: L/H.")
     privileges_required: Literal["N", "L", "H"] = Field(..., description="CVSS v3.1 Privileges Required: N/L/H.")
@@ -131,28 +131,6 @@ class RiskResult(LLMFactorResult):
     cvss_impact: float = Field(..., description="CVSS v3.1 Impact component.")
     cvss_exploitability: float = Field(..., description="CVSS v3.1 Exploitability component.")
 
-
-# =========================
-# Git 相關工具
-# =========================
-def is_git_repo(path: str) -> bool:
-    return os.path.isdir(os.path.join(path, ".git"))
-
-
-def get_git_context(repo: str, file_path: str, n: int) -> dict:
-    """
-    取得某個檔案最近 n 筆 commit message（只抓 subject）。
-    這些訊息可作為額外上下文提供給 LLM。
-    """
-    rel = os.path.relpath(file_path, repo)
-    cmd = ["git", "-C", repo, "log", f"-n{n}", "--pretty=format:%s", "--", rel]
-    try:
-        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
-    except Exception:
-        return {"commit_count": 0, "recent_messages": []}
-
-    msgs = [line.strip() for line in out.splitlines() if line.strip()]
-    return {"commit_count": len(msgs), "recent_messages": msgs[:n]}
 
 # =========================
 # Record / JSONL 工具
@@ -230,9 +208,10 @@ def round_metric(value: float) -> float:
     return round(value, 4)
 
 
-# =========================
-# CVSS v3.1 Base Score 公式
-# =========================
+# ======================================================================
+# CVSS v3.1 Base Score 公式，越容易被利用、越不需要前置條件、影響越大，數值越高。
+# https://www.first.org/cvss/v3-1/specification-document
+# ======================================================================
 AV_VALUES = {
     "N": 0.85,
     "A": 0.62,
@@ -269,7 +248,7 @@ IMPACT_VALUES = {
     "N": 0.0,
 }
 
-
+# roundup 是 CVSS v3.1 規定的「無條件進位到小數第一位」
 def cvss_roundup(value: float) -> float:
     """
     CVSS v3.1 roundup: round up to one decimal place.
@@ -312,14 +291,14 @@ GATEKEEPER_BONUS = 0.03
 GATEKEEPER_BONUS_GATE_THRESHOLD = 0.7
 GATEKEEPER_BONUS_EVIDENCE_THRESHOLD = 0.6
 
-
+# 對應basline_prompt中的prioritization_rubric，Python 再把這些 factor 加權成 prioritization_score
 def compute_prioritization_score(factors: LLMFactorResult, severity_score: float) -> float:
     """
     Function-level ranking score. CVSS severity is only a small supporting signal;
     root-cause locality and observable code proxies drive the ranking.
     """
     score = (
-        0.28 * factors.root_cause_likelihood
+        0.28 * factors.root_cause_likelihood   # 權重最高。因為排名目標是找 root cause，不是找最危險的 API 或最長的 parser function。
         + 0.16 * factors.input_exposure
         + 0.16 * factors.decision_or_validation_risk
         + 0.14 * factors.state_ordering_consistency_risk
@@ -611,7 +590,7 @@ def run_report_path(out_dir: str, run_idx: int, total_runs: int, default_out_pat
     return os.path.join(out_dir, filename)
 
 # 把原始 function record 與 LLM 分析結果合併成最終輸出格式。
-def build_output_record(rec: dict, risk: RiskResult, git_ctx: Optional[dict], run_idx: int) -> dict:
+def build_output_record(rec: dict, risk: RiskResult, run_idx: int) -> dict:
     out = {
         **{k: v for k, v in rec.items() if not k.startswith("_")},
         "_key": rec["_key"],
@@ -621,8 +600,6 @@ def build_output_record(rec: dict, risk: RiskResult, git_ctx: Optional[dict], ru
         "prompt_name": PROMPT_NAME,
         "prompt_version": PROMPT_VERSION,
     }
-    if git_ctx is not None:
-        out["git_context"] = git_ctx
     return out
 
 
@@ -634,15 +611,11 @@ def analyze_single_run(
     model: str,
     records: List[dict],
     out_path: str,
-    git_enabled: bool,
-    repo: str,
-    git_n: int,
     resume: bool,
     run_idx: int,
     total_runs: int,
 ) -> List[dict]:
     done_keys = load_done_keys(out_path) if resume else set()
-    git_cache: Dict[str, dict] = {}
     mode = "a" if resume else "w"
     run_results: List[dict] = []
 
@@ -651,14 +624,7 @@ def analyze_single_run(
             if resume and rec["_key"] in done_keys:
                 continue
 
-            file_path = rec.get("file", "")
-            git_ctx = None
-            if git_enabled and file_path:
-                if file_path not in git_cache:
-                    git_cache[file_path] = get_git_context(repo, file_path, git_n)
-                git_ctx = git_cache[file_path]
-
-            prompt = build_user_prompt(rec, git_ctx)
+            prompt = build_user_prompt(rec)
             print(
                 f"[run {run_idx}/{total_runs}] [{idx}/{len(records)}] "
                 f"Analyzing {rec.get('func_name')} (baseline={rec['_baseline']}) ...",
@@ -668,7 +634,7 @@ def analyze_single_run(
 
             try:
                 risk = call_llm(client, model, prompt)
-                out = build_output_record(rec, risk, git_ctx, run_idx)
+                out = build_output_record(rec, risk, run_idx)
                 fout.write(json.dumps(out, ensure_ascii=False) + "\n")
                 fout.flush()
                 run_results.append(out)
@@ -1067,10 +1033,6 @@ def validate_args(args: argparse.Namespace) -> None:
         print(f"ERROR: input file not found: {args.in_path}", file=sys.stderr)
         sys.exit(1)
 
-    if args.git and not is_git_repo(args.repo):
-        print(f"ERROR: --repo is not a git repo: {args.repo}", file=sys.stderr)
-        sys.exit(1)
-
     if args.resume and args.runs > 1:
         print("ERROR: --resume is only supported for single-run mode", file=sys.stderr)
         sys.exit(1)
@@ -1086,9 +1048,6 @@ def main() -> None:
     ap.add_argument("--out-dir", default="", help="Output directory for multi-run artifacts")
     ap.add_argument("--model", default="gpt-4o-2024-08-06", help="OpenAI model id")
     ap.add_argument("--topk", type=int, default=0, help="Only analyze top-k by baseline score (0 = analyze all)")
-    ap.add_argument("--git", action="store_true", help="Include git commit messages (file-level) in prompt")
-    ap.add_argument("--repo", default=".", help="Path to git repo root (used when --git is set)")
-    ap.add_argument("--git-n", type=int, default=20, help="Number of recent commit messages per file")
     ap.add_argument("--resume", action="store_true", help="Resume: skip records already written to out_path")
     ap.add_argument("--score-json", default="", help="Optional path to write score summary as a JSON file")
     ap.add_argument("--runs", type=int, default=1, help="Number of repeated runs for the same batch")
@@ -1115,9 +1074,6 @@ def main() -> None:
             model=args.model,
             records=records,
             out_path=out_path,
-            git_enabled=args.git,
-            repo=args.repo,
-            git_n=args.git_n,
             resume=args.resume,
             run_idx=run_idx,
             total_runs=args.runs,

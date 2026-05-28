@@ -52,6 +52,7 @@ def format_function_metadata(rec: dict) -> str:
 
 # 分析目標函數的呼叫上下文：
 # 包含 caller、callee，以及相關函數之間的關聯性
+# 把 extractor 產生的 caller/callee/cross-function evidence 整理成文字，放進 user prompt。
 def format_call_context(rec: dict) -> str:
     caller_summary = rec.get("caller_summary") or {}
     callee_summary = rec.get("callee_summary") or {}
@@ -134,18 +135,3 @@ def format_call_context(rec: dict) -> str:
         lines.append("- none detected")
 
     return "\n".join(lines) + "\n"
-
-
-def format_git_context(git_ctx: Optional[dict]) -> str:
-    if git_ctx is None:
-        return ""
-
-    messages = git_ctx.get("recent_messages", [])
-    msg_text = "\n".join([f"  - {m}" for m in messages])
-
-    return (
-        "\nGit context (optional):\n"
-        f"- Commits analyzed: {git_ctx.get('commit_count', 0)}\n"
-        f"- Recent commit messages (latest first):\n"
-        f"{msg_text}\n"
-    )
