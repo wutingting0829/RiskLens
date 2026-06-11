@@ -227,3 +227,45 @@ python3 analyze_llm.py \
   --model gpt-5.5
 
 ```
+### Test Case - CVE-2019-16279
+```
+cd /home/sense/func-extractor
+
+./build/func_extractor input/cve-2019-16279.c -- \
+  -std=gnu11 \
+  -D__linux__ \
+  -I/home/sense/nostromo-1.9.6/src/nhttpd \
+  -I/home/sense/nostromo-1.9.6/src/libmy \
+  -I/home/sense/nostromo-1.9.6/src/libbsd \
+  -I/home/sense/miniconda3/lib/clang/16/include \
+  > input/cve-2019-16279-function.jsonl
+
+python3 analyze_llm.py \
+  --in input/cve-2019-16279-function.jsonl \
+  --runs 1 \
+  --out-dir outputs/cve-2019-16279-function \
+  --score-json outputs/cve-2019-16279-function/summary.json \
+  --model gpt-5.5  
+
+```
+
+### Test Case - CVE-2012-5533
+```
+cd /home/sense/func-extractor
+
+./build/func_extractor input/cve-2012-5533.c -- \
+  -std=gnu11 \
+  -DHAVE_SOCKLEN_T=1 \
+  -DHAVE_STDINT_H=1 \
+  -I/home/sense/lighttpd-1.4.31/src \
+  -I/home/sense/miniconda3/lib/clang/16/include \
+  > input/cve-2012-5533-function.jsonl
+
+python3 analyze_llm.py \
+  --in input/cve-2012-5533-function.jsonl \
+  --runs 5 \
+  --out-dir outputs/cve-2012-5533-function \
+  --score-json outputs/cve-2012-5533-function/summary.json \
+  --model gpt-5.5  
+
+```
