@@ -99,7 +99,7 @@ public:
                 if (!SeenInCaller.insert(edgeKey).second) continue;
 
                 CallerEdge Edge = buildCallerEdge(Caller, Call);
-                CallersByCallee[Call.calleeName].push_back(Edge);
+                CallersByCallee[Call.calleeName].push_back(Edge); //建立反向表
             }
         }
 
@@ -481,6 +481,7 @@ private:
         return "unclear from call arguments";
     }
 
+    //將classifyInputOrigin的結果再中和成一個更 general 的 hint，這是對 control path importance 的一個 strong/medium/weak signal。它會幫助我們在沒有 call graph depth 的情況下，先對 caller 的「位置」做一個初步的判斷。
     static std::string neutralInputOriginHint(const std::string &InputOrigin) {
         if (InputOrigin == "syntactic input-like argument" || InputOrigin == "syntactic user/file-like argument") {
             return "syntactic input-like argument detected";
@@ -580,7 +581,7 @@ private:
     static bool argsLookStructuredParserLike(const std::string &Args) {
         return containsAny(Args, {"state", "ctx", "context", "parser", "action", "tag", "field", "opcode", "len", "length", "size", "offset", "cursor"});
     }
-
+    //決定 callers[] 裡 top callers 的排序
     static int scoreCallerRelevance(const FunctionInfo &Caller, const CallInfo &Call, const std::string &InputOrigin) {
         std::string Args = lowerCopy(joinStrings(Call.argTexts, " "));
         int Score = 0;
@@ -595,6 +596,7 @@ private:
         return Score;
     }
 
+    //從 caller context 看，這個 function 是否可能位在外部輸入或 parser path 上，這是對 control path importance 的一個 strong/medium/weak signal。它會幫助我們在沒有 call graph depth 的情況下，先對 caller 的「位置」做一個初步的判斷。
     static std::string classifyInputPathHint(const FunctionInfo &Caller, const CallInfo &Call, const std::string &InputOrigin) {
         std::string Args = lowerCopy(joinStrings(Call.argTexts, " "));
         bool HasInputArgs = argsLookInputLike(Args);
@@ -607,6 +609,7 @@ private:
         return "weak";
     }
 
+    //role_hint 是根據 caller 名稱、argument pattern、relevance score 產生的描述文字。
     static std::string summarizeControlPathRole(const FunctionInfo &Caller, const CallInfo &Call, int RelevanceScore) {
         std::string Args = lowerCopy(joinStrings(Call.argTexts, " "));
         if (callerNameLooksLikeEntry(Caller.funcName) && argsLookInputLike(Args)) {

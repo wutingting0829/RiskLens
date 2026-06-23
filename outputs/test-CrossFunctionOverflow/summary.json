@@ -1,0 +1,365 @@
+{
+  "generated_at": "2026-06-17T08:17:25.654481+00:00",
+  "runs": 5,
+  "total_functions": 3,
+  "overall_average_prioritization_score": 0.447,
+  "overall_average_severity_score": 2.3267,
+  "overall_average_risk_score": 2.3267,
+  "overall_average_rank_volatility": 0.0,
+  "functions": [
+    {
+      "_key": "/home/sense/func-extractor/input/test-CrossFunctionOverflow.c::copy_to_stack_buffer::16-21::6608cea554469189",
+      "file": "/home/sense/func-extractor/input/test-CrossFunctionOverflow.c",
+      "func_name": "copy_to_stack_buffer",
+      "line_start": 16,
+      "line_end": 21,
+      "baseline": 20,
+      "runs_expected": 5,
+      "runs_completed": 5,
+      "average_prioritization_score": 0.5498,
+      "prioritization_score_stddev": 0.0124,
+      "average_severity_score": 6.98,
+      "severity_score_stddev": 0.4025,
+      "average_risk_score": 6.98,
+      "risk_score_stddev": 0.4025,
+      "average_root_cause_likelihood": 0.7,
+      "average_input_exposure": 0.64,
+      "average_decision_or_validation_risk": 0.2,
+      "average_state_ordering_consistency_risk": 0.34,
+      "average_failure_trigger_plausibility": 0.76,
+      "average_security_boundary_relevance": 0.48,
+      "average_evidence_strength": 0.72,
+      "average_confidence": 0.82,
+      "average_rank": 1.0,
+      "rank_volatility": 0.0,
+      "run_prioritization_scores": [
+        0.5618,
+        0.5388,
+        0.5647,
+        0.5418,
+        0.5418
+      ],
+      "run_severity_scores": [
+        6.8,
+        6.8,
+        7.7,
+        6.8,
+        6.8
+      ],
+      "run_scores": [
+        6.8,
+        6.8,
+        7.7,
+        6.8,
+        6.8
+      ],
+      "run_root_cause_likelihoods": [
+        0.7,
+        0.7,
+        0.7,
+        0.7,
+        0.7
+      ],
+      "run_input_exposures": [
+        0.6,
+        0.6,
+        0.8,
+        0.6,
+        0.6
+      ],
+      "run_decision_or_validation_risks": [
+        0.2,
+        0.2,
+        0.2,
+        0.2,
+        0.2
+      ],
+      "run_state_ordering_consistency_risks": [
+        0.5,
+        0.3,
+        0.3,
+        0.3,
+        0.3
+      ],
+      "run_failure_trigger_plausibilities": [
+        0.8,
+        0.7,
+        0.7,
+        0.8,
+        0.8
+      ],
+      "run_security_boundary_relevances": [
+        0.4,
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "run_confidences": [
+        0.8,
+        0.9,
+        0.8,
+        0.8,
+        0.8
+      ],
+      "run_ranks": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "run_cvss_vectors": [
+        "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:L",
+        "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:L",
+        "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:H",
+        "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:L",
+        "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:L"
+      ],
+      "dominant_cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:L",
+      "risk_levels": [
+        "Medium",
+        "Medium",
+        "High",
+        "Medium",
+        "Medium"
+      ]
+    },
+    {
+      "_key": "/home/sense/func-extractor/input/test-CrossFunctionOverflow.c::handle_user_input::23-27::e696ce5dd1d5028e",
+      "file": "/home/sense/func-extractor/input/test-CrossFunctionOverflow.c",
+      "func_name": "handle_user_input",
+      "line_start": 23,
+      "line_end": 27,
+      "baseline": 5,
+      "runs_expected": 5,
+      "runs_completed": 5,
+      "average_prioritization_score": 0.43,
+      "prioritization_score_stddev": 0.026,
+      "average_severity_score": 0.0,
+      "severity_score_stddev": 0.0,
+      "average_risk_score": 0.0,
+      "risk_score_stddev": 0.0,
+      "average_root_cause_likelihood": 0.4,
+      "average_input_exposure": 0.7,
+      "average_decision_or_validation_risk": 0.46,
+      "average_state_ordering_consistency_risk": 0.28,
+      "average_failure_trigger_plausibility": 0.4,
+      "average_security_boundary_relevance": 0.28,
+      "average_evidence_strength": 0.44,
+      "average_confidence": 0.6,
+      "average_rank": 2.0,
+      "rank_volatility": 0.0,
+      "run_prioritization_scores": [
+        0.445,
+        0.384,
+        0.438,
+        0.438,
+        0.445
+      ],
+      "run_severity_scores": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "run_scores": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "run_root_cause_likelihoods": [
+        0.4,
+        0.4,
+        0.4,
+        0.4,
+        0.4
+      ],
+      "run_input_exposures": [
+        0.7,
+        0.7,
+        0.7,
+        0.7,
+        0.7
+      ],
+      "run_decision_or_validation_risks": [
+        0.5,
+        0.3,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "run_state_ordering_consistency_risks": [
+        0.3,
+        0.2,
+        0.3,
+        0.3,
+        0.3
+      ],
+      "run_failure_trigger_plausibilities": [
+        0.4,
+        0.4,
+        0.4,
+        0.4,
+        0.4
+      ],
+      "run_security_boundary_relevances": [
+        0.3,
+        0.2,
+        0.3,
+        0.3,
+        0.3
+      ],
+      "run_confidences": [
+        0.6,
+        0.6,
+        0.6,
+        0.6,
+        0.6
+      ],
+      "run_ranks": [
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0
+      ],
+      "run_cvss_vectors": [
+        "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:N",
+        "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+        "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+        "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:N",
+        "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:N"
+      ],
+      "dominant_cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:N",
+      "risk_levels": [
+        "None",
+        "None",
+        "None",
+        "None",
+        "None"
+      ]
+    },
+    {
+      "_key": "/home/sense/func-extractor/input/test-CrossFunctionOverflow.c::main::29-35::51808b18c60a32dd",
+      "file": "/home/sense/func-extractor/input/test-CrossFunctionOverflow.c",
+      "func_name": "main",
+      "line_start": 29,
+      "line_end": 35,
+      "baseline": 15,
+      "runs_expected": 5,
+      "runs_completed": 5,
+      "average_prioritization_score": 0.3612,
+      "prioritization_score_stddev": 0.0072,
+      "average_severity_score": 0.0,
+      "severity_score_stddev": 0.0,
+      "average_risk_score": 0.0,
+      "risk_score_stddev": 0.0,
+      "average_root_cause_likelihood": 0.4,
+      "average_input_exposure": 0.62,
+      "average_decision_or_validation_risk": 0.3,
+      "average_state_ordering_consistency_risk": 0.2,
+      "average_failure_trigger_plausibility": 0.3,
+      "average_security_boundary_relevance": 0.2,
+      "average_evidence_strength": 0.4,
+      "average_confidence": 0.54,
+      "average_rank": 3.0,
+      "rank_volatility": 0.0,
+      "run_prioritization_scores": [
+        0.358,
+        0.358,
+        0.358,
+        0.374,
+        0.358
+      ],
+      "run_severity_scores": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "run_scores": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "run_root_cause_likelihoods": [
+        0.4,
+        0.4,
+        0.4,
+        0.4,
+        0.4
+      ],
+      "run_input_exposures": [
+        0.6,
+        0.6,
+        0.6,
+        0.7,
+        0.6
+      ],
+      "run_decision_or_validation_risks": [
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3
+      ],
+      "run_state_ordering_consistency_risks": [
+        0.2,
+        0.2,
+        0.2,
+        0.2,
+        0.2
+      ],
+      "run_failure_trigger_plausibilities": [
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3
+      ],
+      "run_security_boundary_relevances": [
+        0.2,
+        0.2,
+        0.2,
+        0.2,
+        0.2
+      ],
+      "run_confidences": [
+        0.5,
+        0.5,
+        0.6,
+        0.6,
+        0.5
+      ],
+      "run_ranks": [
+        3.0,
+        3.0,
+        3.0,
+        3.0,
+        3.0
+      ],
+      "run_cvss_vectors": [
+        "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+        "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+        "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+        "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+        "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"
+      ],
+      "dominant_cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+      "risk_levels": [
+        "None",
+        "None",
+        "None",
+        "None",
+        "None"
+      ]
+    }
+  ]
+}

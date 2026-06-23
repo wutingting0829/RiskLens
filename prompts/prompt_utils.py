@@ -42,6 +42,42 @@ def _neutral_local_signals(callee: dict) -> str:
     return _join_or_default(neutral, "none observed")
 
 
+def _caller_input_path_hint(caller: dict) -> str:
+    return str(caller.get("input_path_hint") or caller.get("input_path_evidence") or "weak").lower()
+
+
+def _caller_identity(caller: dict) -> tuple:
+    return (
+        caller.get("func_name", ""),
+        tuple(caller.get("arg_texts") or caller.get("arguments") or []),
+    )
+
+# Select a subset of callers for inclusion in the prompt, prioritizing top-ranked callers and those with strong or medium input-path evidence.
+def _select_callers_for_prompt(callers: list, base_count: int = 2, max_count: int = 5) -> list:
+    """Keep top-ranked callers, then add strong/medium input-path evidence."""
+    selected = []
+    seen = set()
+
+    def add(caller: dict) -> None:
+        if len(selected) >= max_count:
+            return
+        key = _caller_identity(caller)
+        if key in seen:
+            return
+        selected.append(caller)
+        seen.add(key)
+
+    for caller in callers[:base_count]:
+        add(caller)
+
+    for level in ("strong", "medium"):
+        for caller in callers[base_count:]:
+            if _caller_input_path_hint(caller) == level:
+                add(caller)
+
+    return selected
+
+
 def format_function_metadata(rec: dict) -> str:
     return (
         "Function metadata:\n"
@@ -66,8 +102,8 @@ def format_call_context(rec: dict) -> str:
     lines = ["\nCall Context Summary (LLVM/Clang MVP):", "Caller Context:"]
 
     if callers:
-        for caller in callers[:2]:
-            input_path_hint = caller.get("input_path_hint") or caller.get("input_path_evidence") or "weak"
+        for caller in _select_callers_for_prompt(callers):
+            input_path_hint = _caller_input_path_hint(caller)
             arg_text = _join_or_default(caller.get("arg_texts") or caller.get("arguments") or [], "unknown")
             categories = _join_or_default(caller.get("argument_categories") or [], "unclear from syntax")
             lines.append(f"- Called by {caller.get('func_name', 'unknown')} with arguments: {arg_text}")
