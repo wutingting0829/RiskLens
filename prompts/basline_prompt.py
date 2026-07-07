@@ -95,7 +95,7 @@ def build_case_type_addons(rec: dict) -> str:
 
 def build_user_prompt(rec: dict) -> str:
     meta = format_function_metadata(rec)
-    call_context = format_call_context(rec)
+    call_context = format_call_context(rec) # format_call_context()是「資料」
     case_type_addons = build_case_type_addons(rec)
     code_part = safe_code_block(rec.get("code", ""), language="c")
 
@@ -121,6 +121,7 @@ def build_user_prompt(rec: dict) -> str:
 
     # 告訴 LLM「這些 call context 應該怎麼用、不能怎麼用」。
     # 負責限制 LLM 不要亂加分，只能在 call context 和目前 function code 形成具體證據時使用。
+    # call_context_guidance是「使用規則」
     call_context_guidance = (
         "[CALL CONTEXT USAGE]\n"
         "Use caller/callee context only as supporting evidence, not as an automatic score boost.\n"

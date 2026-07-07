@@ -31,41 +31,73 @@ using namespace llvm;
 static cl::OptionCategory MyToolCategory("my-tool-options");
 
 // ========================================================
-// 1. Visitor：走訪 AST 並抓 FunctionDecl
+// 3. Visitor：走訪 AST 並抓 FunctionDecl
 // ========================================================
+
+/*
+FindFunctionsConsumer::HandleTranslationUnit()
+  -> Visitor.TraverseDecl(Context.getTranslationUnitDecl())
+      -> VisitFunctionDecl()
+          -> 過濾 function
+          -> 抽 function name / file / line / code
+          -> CallCollector.TraverseStmt(Body)
+              -> 收集 CallExpr
+              -> 偵測 BinaryOperator direct evidence
+          -> addSecurityOrderingSignals()
+          -> Functions.push_back(Info)
+
+  -> Visitor.emitJsonLines()
+      -> 建立 caller/callee 關聯
+      -> 產生 JSONL
+*/
+
+/*
+FindFunctionsVisitor 主要做 5 件事:
+1. 找出 main file 裡所有有 body 的 function definition
+2. 抽出每個 function 的原始碼與行號
+3. 收集每個 function 裡呼叫了哪些 callee
+4. 分析 caller / callee 的關聯與安全相關 signals
+5. 輸出每個 function 一行 JSONL
+*/
 
 class FindFunctionsVisitor : public RecursiveASTVisitor<FindFunctionsVisitor> {
 public:
     explicit FindFunctionsVisitor(ASTContext *Context) : Context(Context) {}
     //當它走到一個 "FunctionDecl" (函數宣告/定義) 時會自動呼叫此函式
     bool VisitFunctionDecl(FunctionDecl *FD){
-        //只印出有實作內容 (Body) 的函數定義，忽略單純的 Header 宣告
+        // 只印出有實作內容 (Body) 的函數定義，忽略單純的 Header 宣告
+        // 過濾不需要的 function
         if(!FD) return true;
         if(!FD->isThisDeclarationADefinition()) return true; // 排除 forward declaration/redeclaration
         Stmt *Body = FD->getBody();
         if(!Body) return true; //只要「有 body」的 function（排除純宣告）
 
+        /*
+        物件              | 意思                                  
+        ---------------- | -------------------------------       
+        `SourceManager`  | 管理 source file、line number、檔案位置  (clang的地圖)
+        `SourceLocation` | 某段程式碼在 source 裡的位置             
+        `BeginLoc`       | function 開始的位置                    
+        */
         const SourceManager &SM = Context->getSourceManager(); //包括主檔案和包含的檔案
-        SourceLocation BeginLoc = FD->getBeginLoc(); //是否為無效位置
-        if(BeginLoc.isInvalid()) return true;
-        // 只抓 main file，避免系統 header / include 的 function 也被抓到
-        if(!SM.isWrittenInMainFile(BeginLoc)) return true;
+        SourceLocation BeginLoc = FD->getBeginLoc(); //BeginLoc 指向 function signature 的第一個 token。
+        if(BeginLoc.isInvalid()) return true; //是否為無效位置
+        if(!SM.isWrittenInMainFile(BeginLoc)) return true;  // 只抓 main file，避免系統 header / include 的 function 也被抓到
 
-        //取得函數name
-        std::string FuncName = FD->getNameInfo().getName().getAsString();
-
-        //取得函式原始碼文字（含 signature + body）
-        std::string CodeText = getFunctionSourceText(*FD, SM, Context->getLangOpts());
-
+        /*抽出 function metadata: function name, function source code, file name, start line, end line*/
+        std::string FuncName = FD->getNameInfo().getName().getAsString(); //取得函數name
+        std::string CodeText = getFunctionSourceText(*FD, SM, Context->getLangOpts());  //取得函式原始碼文字（含 signature + body）
+        
         //取得位置資訊
         PresumedLoc PBegin = SM.getPresumedLoc(BeginLoc);
         PresumedLoc PEnd = SM.getPresumedLoc(FD->getEndLoc());
-
+        
         // 若 PresumedLoc 無效（少見），退回用 line number
         unsigned StartLine = PBegin.isValid() ? PBegin.getLine() : SM.getSpellingLineNumber(BeginLoc);
         unsigned EndLine = PEnd.isValid() ? PEnd.getLine() : SM.getSpellingLineNumber(FD->getEndLoc());
         std::string filename = PBegin.isValid() ? std::string(PBegin.getFilename()) : "<unknown>";
-
+        
+        // 把剛剛抽到的東西裝進 FunctionInfo
         FunctionInfo Info;
         Info.file = filename;
         Info.funcName = FuncName;
@@ -73,10 +105,10 @@ public:
         Info.lineEnd = EndLine;
         Info.code = CodeText;
 
+        /* CallCollector 負責單一 function body：找這個 function 裡呼叫了哪些 callee */
         CallCollector CallVisitor(Context, &Info);
         CallVisitor.TraverseStmt(Body);
-        addSecurityOrderingSignals(Info);
-
+        addSecurityOrderingSignals(Info); // 補上currentFunctionSignals和crossFunctionDirectEvidence
         Functions.push_back(std::move(Info));
 
         return true; //繼續走訪其他 AST 節點
@@ -85,14 +117,16 @@ public:
 
     // 收集 direct call graph，輸出 caller_summary / callee_summary
     void emitJsonLines() {
+        // 建立 function name 查找表: function name -> FunctionInfo*
         std::map<std::string, FunctionInfo *> ByName;
         for (auto &Info : Functions) {
             ByName[Info.funcName] = &Info;
         }
 
+        /* 建立反向 caller 表: callee name -> 哪些 function 呼叫它 */
         std::map<std::string, std::vector<CallerEdge>> CallersByCallee;
         for (const auto &Caller : Functions) {
-            std::set<std::string> SeenInCaller;
+            std::set<std::string> SeenInCaller; // 為了避免同一個 caller 對同一個 callee 重複計算
             for (const auto &Call : Caller.calls) {
                 if (Call.calleeName.empty()) continue;
                 std::string edgeKey = Caller.funcName + "->" + Call.calleeName;
@@ -120,6 +154,7 @@ public:
         }
     }
 
+/* FindFunctionsVisitor 裡面的內部資料模型 */
 private:
     struct CallInfo {
         std::string calleeName;
@@ -181,220 +216,20 @@ private:
         std::string evidenceScope = "downstream_only";
         bool isCurrentFunctionEvidence = false;
         bool isDownstreamEvidence = true;
-        int argumentFlowScore = 0;
-        int roleMatchScore = 0;
-        int dangerSignalScore = 0;
+        int argumentFlowScore = 0; //傳入參數是否像 buffer、length、path、uid、auth policy 等重要資料
+        int roleMatchScore = 0; // callee 的角色是否和參數類型吻合，例如傳 buffer 給 memory helper
+        int dangerSignalScore = 0; // ecallee 本身是否有 memory copy、buffer write、parser update 等 signal
         // New taxonomy-guided scores
-        int operationSignalScore = 0;
-        int securityContextScore = 0;
+        int operationSignalScore = 0; // callee 是否有 taxonomy operation，例如 command execution、privilege transition
+        int securityContextScore = 0; // 名稱/code 是否涉及 auth、policy、root、crypto 等安全上下文
 
-        int relevanceScore = 0;
+        int relevanceScore = 0; // 綜合分數，用來排序 top callees
         
         
     };
 
-    ASTContext *Context;
-    std::vector<FunctionInfo> Functions;
-    //  用 Clang AST CallExpr 抽 callee 與 argument expression
-    class CallCollector : public RecursiveASTVisitor<CallCollector> {
-    public:
-        CallCollector(ASTContext *Context, FunctionInfo *Info) : Context(Context), Info(Info) {}
-
-        bool VisitCallExpr(CallExpr *CE) {
-            if (!CE || !Info) return true;
-
-            FunctionDecl *DirectCallee = CE->getDirectCallee();
-            std::string CalleeName;
-            if (DirectCallee) {
-                CalleeName = DirectCallee->getNameInfo().getName().getAsString();
-            } else {
-                CalleeName = getExprText(CE->getCallee(), Context->getSourceManager(), Context->getLangOpts());
-            }
-            if (CalleeName.empty()) return true;
-
-            CallInfo Call;
-            Call.calleeName = CalleeName;
-            for (const Expr *Arg : CE->arguments()) {
-                Call.argTexts.push_back(getExprText(Arg, Context->getSourceManager(), Context->getLangOpts()));
-            }
-            Info->calls.push_back(std::move(Call));
-            return true;
-        }
-
-        // 會檢查 assignment 是否使用 call return來更新 loop/index 變數，這是 parser 進度控制的 strong signal。
-        bool VisitBinaryOperator(BinaryOperator *BO) {
-            if (!BO || !Info) return true;
-            std::string LHS = getExprText(BO->getLHS(), Context->getSourceManager(), Context->getLangOpts());
-            std::string RHS = getExprText(BO->getRHS(), Context->getSourceManager(), Context->getLangOpts());
-            if (!assignmentUsesCallReturn(BO, LHS, RHS)) return true;
-
-            std::string Op = BO->getOpcodeStr().str();
-            if (LHS.empty() || RHS.empty()) return true;
-
-            std::string CalleeName = getFirstCalleeName(BO->getRHS(), Context);
-            std::string Expression = LHS + " " + Op + " " + RHS;
-            std::string Signal = "unchecked callee return controls loop progress: " + Expression;
-            Info->currentFunctionSignals.push_back(Signal);
-            Info->currentFunctionSignals = uniqueStrings(Info->currentFunctionSignals);
-
-            //它不是一般的「callee 有危險操作」；它想標出 跨函式互動造成的 current-function direct evidence。
-            DirectEvidence Evidence;
-            Evidence.kind = "unchecked_callee_return_controls_loop_progress";
-            Evidence.lhs = LHS;
-            Evidence.calleeName = CalleeName.empty() ? "unknown" : CalleeName;
-            Evidence.expression = Expression;
-            Evidence.evidenceStrength = "strong";
-            Evidence.explanation =
-                "The current function updates its own loop/index/progress variable using a callee return value without an observed local bounds/progress check. "
-                "This is direct evidence for the current function because parser traversal/progress control occurs in the current function body.";
-            Evidence.boundCheckObserved = false;
-
-            bool Seen = false;
-            for (const auto &Existing : Info->crossFunctionDirectEvidence) {
-                if (Existing.kind == Evidence.kind && Existing.expression == Evidence.expression) {
-                    Seen = true;
-                    break;
-                }
-            }
-            if (!Seen) Info->crossFunctionDirectEvidence.push_back(Evidence);
-            return true;
-        }
-
-    private:
-        ASTContext *Context;
-        FunctionInfo *Info;
-
-        class CallPresenceVisitor : public RecursiveASTVisitor<CallPresenceVisitor> {
-        public:
-            bool found = false;
-
-            bool VisitCallExpr(CallExpr *CE) {
-                if (CE) found = true;
-                return false;
-            }
-        };
-
-        static bool subtreeContainsCall(Stmt *S) {
-            if (!S) return false;
-            CallPresenceVisitor Visitor;
-            Visitor.TraverseStmt(S);
-            return Visitor.found;
-        }
-
-        class FirstCallNameVisitor : public RecursiveASTVisitor<FirstCallNameVisitor> {
-        public:
-            explicit FirstCallNameVisitor(ASTContext *Context) : Context(Context) {}
-
-            bool VisitCallExpr(CallExpr *CE) {
-                if (!CE || !calleeName.empty()) return false;
-
-                if (FunctionDecl *FD = CE->getDirectCallee()) {
-                    calleeName = FD->getNameInfo().getName().getAsString();
-                } else if (Context) {
-                    calleeName = getExprText(CE->getCallee(), Context->getSourceManager(), Context->getLangOpts());
-                }
-                return false;
-            }
-
-            std::string calleeName;
-
-        private:
-            ASTContext *Context;
-        };
-
-        static std::string getFirstCalleeName(Stmt *S, ASTContext *Context) {
-            if (!S || !Context) return "";
-            FirstCallNameVisitor Visitor(Context);
-            Visitor.TraverseStmt(S);
-            return Visitor.calleeName;
-        }
-
-        static bool looksLikeProgressVariable(const std::string &LHS, const std::string &RHS) {
-            std::string Name = lowerCopy(LHS);
-            std::string Right = lowerCopy(RHS);
-            if (containsAny(Name, {"cursor", "pos", "position", "idx", "index", "offset", "off", "read", "consume", "consumed", "remain", "remaining", "progress", "nread"})) {
-                return true;
-            }
-            if ((Name == "i" || Name == "j" || Name == "k" || Name == "n") && Right.find(Name) != std::string::npos) {
-                return true;
-            }
-            return false;
-        }
-
-        static bool assignmentUsesCallReturn(BinaryOperator *BO, const std::string &LHS, const std::string &RHS) {
-            if (!BO) return false;
-
-            BinaryOperatorKind Opcode = BO->getOpcode();
-            if (Opcode == BO_AddAssign || Opcode == BO_SubAssign) {
-                return subtreeContainsCall(BO->getRHS());
-            }
-
-            return Opcode == BO_Assign
-                && subtreeContainsCall(BO->getRHS())
-                && looksLikeProgressVariable(LHS, RHS);
-        }
-    };
-
-    static bool callNameLooksBoundaryTransition(const std::string &FuncName) {
-        std::string Name = lowerCopy(FuncName);
-        return containsAny(Name, {
-            "pivot_root", "unpivot", "chroot", "runchroot", "setns", "mount",
-            "chdir", "fchdir", "setuid", "seteuid", "setreuid", "setresuid",
-            "setgid", "setegid", "setregid", "setresgid", "setgroups",
-            "initgroups", "set_perms", "restore_perms", "capset"
-        });
-    }
-
-    static bool callNameLooksAuthorityDependentResolution(const std::string &FuncName) {
-        std::string Name = lowerCopy(FuncName);
-        return containsAny(Name, {
-            "resolve", "resolve_cmnd", "find_path", "find_editor", "lookup",
-            "getpwnam", "getpwuid", "getgrnam", "getgrgid", "sudo_getpw",
-            "sudo_getgr", "nss", "realpath", "canonical", "open_conf_path",
-            "open", "stat", "lstat", "fstat", "readlink", "sudo_secure"
-        });
-    }
-
-    static void addSecurityOrderingSignals(FunctionInfo &Info) {
-        for (size_t I = 0; I < Info.calls.size(); ++I) {
-            const CallInfo &BoundaryCall = Info.calls[I];
-            if (!callNameLooksBoundaryTransition(BoundaryCall.calleeName)) continue;
-
-            for (size_t J = I + 1; J < Info.calls.size(); ++J) {
-                const CallInfo &ResolutionCall = Info.calls[J];
-                if (!callNameLooksAuthorityDependentResolution(ResolutionCall.calleeName)) continue;
-
-                std::string Expression = BoundaryCall.calleeName + " -> " + ResolutionCall.calleeName;
-                std::string Signal =
-                    "security-sensitive boundary transition around authority-dependent resolution: " +
-                    Expression;
-                Info.currentFunctionSignals.push_back(Signal);
-                Info.currentFunctionSignals = uniqueStrings(Info.currentFunctionSignals);
-
-                DirectEvidence Evidence;
-                Evidence.kind = "security_boundary_transition_around_resolution";
-                Evidence.lhs = "security boundary state";
-                Evidence.calleeName = ResolutionCall.calleeName;
-                Evidence.expression = Expression;
-                Evidence.evidenceStrength = "strong";
-                Evidence.explanation =
-                    "The current function locally performs a security-sensitive boundary transition before or around "
-                    "name, path, command, or authority-dependent resolution. Treat this ordering as direct current-function "
-                    "evidence because the security boundary state controls how the later lookup is interpreted.";
-                Evidence.boundCheckObserved = false;
-
-                bool Seen = false;
-                for (const auto &Existing : Info.crossFunctionDirectEvidence) {
-                    if (Existing.kind == Evidence.kind && Existing.expression == Evidence.expression) {
-                        Seen = true;
-                        break;
-                    }
-                }
-                if (!Seen) Info.crossFunctionDirectEvidence.push_back(Evidence);
-                break;
-            }
-        }
-    }
+    ASTContext *Context; // clang ASTContext，提供 AST 節點的上下文資訊
+    std::vector<FunctionInfo> Functions; // 存放目前 translation unit 中所有被收集到的 function 資訊
 
     //JSON 跳脫函式
     static std::string escapeJson(const std::string &input){
@@ -425,6 +260,7 @@ private:
         return output;
     }
 
+    /* 將字串轉換為小寫並返回副本 */
     static std::string lowerCopy(std::string Value) {
         std::transform(Value.begin(), Value.end(), Value.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(c));
@@ -432,13 +268,14 @@ private:
         return Value;
     }
 
+    /* 檢查字串是否包含任何指定的子字串 */
     static bool containsAny(const std::string &Haystack, const std::vector<std::string> &Needles) {
         for (const auto &Needle : Needles) {
             if (Haystack.find(Needle) != std::string::npos) return true;
         }
         return false;
     }
-
+    /* 把 vector<string> 串成一個字串 */
     static std::string joinStrings(const std::vector<std::string> &Values, const std::string &Sep) {
         std::ostringstream OS;
         for (size_t I = 0; I < Values.size(); ++I) {
@@ -457,6 +294,7 @@ private:
         return Result;
     }
 
+    /* 把 Clang AST 裡的一個 expression 節點，轉回「原始碼文字」的 helper function */
     static std::string getExprText(const Expr *E, const SourceManager &SM, const LangOptions &LO) {
         if (!E) return "";
         CharSourceRange CSR = CharSourceRange::getTokenRange(E->getSourceRange());
@@ -466,6 +304,265 @@ private:
         return Text.str();
     }
 
+    // ========================================================
+    // 從 SourceRange 抽出原始碼文字
+    // ========================================================
+    static std::string getFunctionSourceText(const FunctionDecl &FD, const SourceManager &SM, const LangOptions &LO){
+        //FunctionDecl 的 SourceRange 通常涵蓋 signature + body
+        SourceRange SR = FD.getSourceRange();
+
+        // getEndLoc() 指向的是最後一個 Token 的「開頭」（也就是 '}' 的左邊）。
+        // 我們需要的是 '}' 的「右邊」。
+        // 所以要用 CharSourceRange::getTokenRange 讓 Lexer 知道我們要包含最後那個 Token。
+
+        CharSourceRange CSR = CharSourceRange::getTokenRange(SR);      
+        bool Invalid = false;  
+
+        // Lexer::getSourceText 是 Clang 提供的一個靜態函式，用於從指定的 CharSourceRange 中提取原始程式碼文字。
+        //static StringRef getSourceText(CharSourceRange Range, const SourceManager &SM, const LangOptions &LangOpts, bool *Invalid = nullptr);            
+        StringRef Text = Lexer::getSourceText(CSR, SM, LO, &Invalid); 
+        
+        if(Invalid) return "<Error extracting source text>";
+        return Text.str(); //轉成 std::string 回傳
+
+    }
+    //  CallCollector 是一個專門走訪某個 function body 的小型 AST visitor。
+    /* 在目前 function 裡找出所有 function call，記錄「呼叫了誰」以及「傳了哪些參數」。
+        找到一個 function
+            -> 建立 FunctionInfo Info
+            -> 用 CallCollector 掃描這個 function 的 body
+            -> 把 body 裡的 function calls 存進 Info.calls
+    */
+    class CallCollector : public RecursiveASTVisitor<CallCollector> {
+    public:
+        /* CallCollector 是用來掃描單一 function body 的 visitor */
+        CallCollector(ASTContext *Context, FunctionInfo *Info) : Context(Context), Info(Info) {}
+
+        /*VisitCallExpr() 會抓每個 function call 的 callee 名稱與 argument 原始碼，存進目前 FunctionInfo.calls*/
+        // VisitCallExpr 會在 AST 裡遇到 CallExpr 節點時被呼叫，這裡負責收集 callee name 和參數文字。
+        bool VisitCallExpr(CallExpr *CE) {
+            if (!CE || !Info) return true;
+
+            // 取得 callee 名稱 
+            FunctionDecl *DirectCallee = CE->getDirectCallee();
+            std::string CalleeName;
+            if (DirectCallee) {
+                CalleeName = DirectCallee->getNameInfo().getName().getAsString();
+            } else {
+                // 能用 AST 找到明確 function name 就用 AST；找不到就退回 source text。
+                CalleeName = getExprText(CE->getCallee(), Context->getSourceManager(), Context->getLangOpts());
+            }
+            if (CalleeName.empty()) return true;
+
+            CallInfo Call;
+            Call.calleeName = CalleeName;
+            // 逐一處理 call 的每個 argument，這些 argument 之後會拿去分類
+            for (const Expr *Arg : CE->arguments()) {
+                Call.argTexts.push_back(getExprText(Arg, Context->getSourceManager(), Context->getLangOpts()));
+            }
+            Info->calls.push_back(std::move(Call));
+            return true;
+        }
+
+        /* 用來偵測「目前 function 的 progress/index/loop 變數是否由 callee 回傳值更新」。
+        如果有，它會加入 currentFunctionSignals 和 crossFunctionDirectEvidence，表示這是一個跨函式互動造成、但應該歸因於目前 function 的直接安全據。 */
+        // 會檢查 assignment 是否使用 call return來更新 loop/index 變數，這是 parser 進度控制的 strong signal。
+        bool VisitBinaryOperator(BinaryOperator *BO) {
+            if (!BO || !Info) return true;
+            std::string LHS = getExprText(BO->getLHS(), Context->getSourceManager(), Context->getLangOpts());
+            std::string RHS = getExprText(BO->getRHS(), Context->getSourceManager(), Context->getLangOpts());
+            if (!assignmentUsesCallReturn(BO, LHS, RHS)) return true; // 如果不是「用 callee 回傳值更新 loop/index 變數」，就跳過
+
+            std::string Op = BO->getOpcodeStr().str();
+            if (LHS.empty() || RHS.empty()) return true;
+
+            std::string CalleeName = getFirstCalleeName(BO->getRHS(), Context);
+            std::string Expression = LHS + " " + Op + " " + RHS;
+            std::string Signal = "unchecked callee return controls loop progress: " + Expression;
+            Info->currentFunctionSignals.push_back(Signal);
+            Info->currentFunctionSignals = uniqueStrings(Info->currentFunctionSignals);
+
+            //它不是一般的「callee 有危險操作」；它想標出 跨函式互動造成的 current-function direct evidence。
+            DirectEvidence Evidence;
+            Evidence.kind = "unchecked_callee_return_controls_loop_progress";
+            Evidence.lhs = LHS;
+            Evidence.calleeName = CalleeName.empty() ? "unknown" : CalleeName;
+            Evidence.expression = Expression;
+            Evidence.evidenceStrength = "strong";
+            Evidence.explanation =
+                "The current function updates its own loop/index/progress variable using a callee return value without an observed local bounds/progress check. "
+                "This is direct evidence for the current function because parser traversal/progress control occurs in the current function body.";
+            Evidence.boundCheckObserved = false;
+
+            // 避免重複加入相同的 direct evidence
+            bool Seen = false;
+            for (const auto &Existing : Info->crossFunctionDirectEvidence) {
+                if (Existing.kind == Evidence.kind && Existing.expression == Evidence.expression) {
+                    Seen = true;
+                    break;
+                }
+            }
+            if (!Seen) Info->crossFunctionDirectEvidence.push_back(Evidence);
+            return true;
+        }
+
+    private:
+        ASTContext *Context;
+        FunctionInfo *Info;
+        /* 判斷某個 AST subtree 裡面有沒有 function call。 */
+        class CallPresenceVisitor : public RecursiveASTVisitor<CallPresenceVisitor> {
+        public:
+            bool found = false;
+
+            bool VisitCallExpr(CallExpr *CE) {
+                if (CE) found = true;
+                return false;
+            }
+        };
+
+        /* 判斷 RHS 裡有沒有 call: 它會遞迴掃描某個 AST subtree */
+        static bool subtreeContainsCall(Stmt *S) {
+            if (!S) return false;
+            CallPresenceVisitor Visitor;
+            Visitor.TraverseStmt(S);
+            return Visitor.found;
+        }
+        
+        /* FirstCallNameVisitor 用來從某段 AST 裡抓第一個 function call 的 callee 名稱；
+        能解析 direct callee 就用 Clang 的 FunctionDecl，不能解析就退回原始碼文字。 */
+        class FirstCallNameVisitor : public RecursiveASTVisitor<FirstCallNameVisitor> {
+        public:
+            explicit FirstCallNameVisitor(ASTContext *Context) : Context(Context) {}
+
+            bool VisitCallExpr(CallExpr *CE) {
+                if (!CE || !calleeName.empty()) return false;
+
+                if (FunctionDecl *FD = CE->getDirectCallee()) {
+                    calleeName = FD->getNameInfo().getName().getAsString();
+                } else if (Context) {
+                    calleeName = getExprText(CE->getCallee(), Context->getSourceManager(), Context->getLangOpts());
+                }
+                return false;
+            }
+
+            std::string calleeName;
+
+        private:
+            ASTContext *Context;
+        };
+
+        /* 把使用 FirstCallNameVisitor 的步驟包起來:
+        getFirstCalleeName(RHS, Context)
+            -> 建立 FirstCallNameVisitor
+            -> TraverseStmt(RHS)
+            -> VisitCallExpr(parse_next(buf))
+            -> calleeName = "parse_next"
+            -> return "parse_next"
+        */
+        static std::string getFirstCalleeName(Stmt *S, ASTContext *Context) {
+            if (!S || !Context) return "";
+            FirstCallNameVisitor Visitor(Context);
+            Visitor.TraverseStmt(S);
+            return Visitor.calleeName;
+        }
+
+        /* 判斷 LHS 是否像 progress/index/loop 變數 */
+        static bool looksLikeProgressVariable(const std::string &LHS, const std::string &RHS) {
+            std::string Name = lowerCopy(LHS);
+            std::string Right = lowerCopy(RHS);
+            if (containsAny(Name, {"cursor", "pos", "position", "idx", "index", "offset", "off", "read", "consume", "consumed", "remain", "remaining", "progress", "nread"})) {
+                return true;
+            }
+            if ((Name == "i" || Name == "j" || Name == "k" || Name == "n") && Right.find(Name) != std::string::npos) {
+                return true;
+            }
+            return false;
+        }
+
+        /* 判斷賦值語句是否使用了函數調用的返回值 */
+        static bool assignmentUsesCallReturn(BinaryOperator *BO, const std::string &LHS, const std::string &RHS) {
+            if (!BO) return false;
+            //第一條：+= 或 -=
+            BinaryOperatorKind Opcode = BO->getOpcode();
+            if (Opcode == BO_AddAssign || Opcode == BO_SubAssign) {
+                return subtreeContainsCall(BO->getRHS()); // RHS 裡必須有 function call
+            }
+            //第二條：=
+            return Opcode == BO_Assign
+                && subtreeContainsCall(BO->getRHS())
+                && looksLikeProgressVariable(LHS, RHS); // LHS 必須像 progress/index/loop 變數
+        }
+    };
+
+    /* 判斷某個 callee 名稱像不像「安全邊界轉換」 */
+    static bool callNameLooksBoundaryTransition(const std::string &FuncName) {
+        std::string Name = lowerCopy(FuncName);
+        return containsAny(Name, {
+            "pivot_root", "unpivot", "chroot", "runchroot", "setns", "mount",
+            "chdir", "fchdir", "setuid", "seteuid", "setreuid", "setresuid",
+            "setgid", "setegid", "setregid", "setresgid", "setgroups",
+            "initgroups", "set_perms", "restore_perms", "capset"
+        });
+    }
+
+    /* 判斷某個 callee 名稱像不像「權限依賴解析」 */
+    static bool callNameLooksAuthorityDependentResolution(const std::string &FuncName) {
+        std::string Name = lowerCopy(FuncName);
+        return containsAny(Name, {
+            "resolve", "resolve_cmnd", "find_path", "find_editor", "lookup",
+            "getpwnam", "getpwuid", "getgrnam", "getgrgid", "sudo_getpw",
+            "sudo_getgr", "nss", "realpath", "canonical", "open_conf_path",
+            "open", "stat", "lstat", "fstat", "readlink", "sudo_secure"
+        });
+    }
+
+    /* 這組程式是在同一個 function 的 call sequence 裡，找「安全邊界轉換」後面是否接著出現「受權限/路徑/身份狀態影響的解析操作」。
+    如果有，就把這個呼叫順序標成目前 function 的直接安全證據。 */
+    static void addSecurityOrderingSignals(FunctionInfo &Info) {
+        for (size_t I = 0; I < Info.calls.size(); ++I) {
+            const CallInfo &BoundaryCall = Info.calls[I];
+            if (!callNameLooksBoundaryTransition(BoundaryCall.calleeName)) continue;
+
+            for (size_t J = I + 1; J < Info.calls.size(); ++J) {
+                const CallInfo &ResolutionCall = Info.calls[J];
+                if (!callNameLooksAuthorityDependentResolution(ResolutionCall.calleeName)) continue;
+
+                std::string Expression = BoundaryCall.calleeName + " -> " + ResolutionCall.calleeName;
+                std::string Signal =
+                    "security-sensitive boundary transition around authority-dependent resolution: " +
+                    Expression;
+                Info.currentFunctionSignals.push_back(Signal);
+                Info.currentFunctionSignals = uniqueStrings(Info.currentFunctionSignals);
+                
+                /* 目前 function 先改變安全邊界狀態，然後做 path/name/command/authority-dependent resolution。
+                這個順序本身就是目前 function 的直接證據。 */
+                DirectEvidence Evidence;
+                Evidence.kind = "security_boundary_transition_around_resolution";
+                Evidence.lhs = "security boundary state";
+                Evidence.calleeName = ResolutionCall.calleeName;
+                Evidence.expression = Expression;
+                Evidence.evidenceStrength = "strong";
+                Evidence.explanation =
+                    "The current function locally performs a security-sensitive boundary transition before or around "
+                    "name, path, command, or authority-dependent resolution. Treat this ordering as direct current-function "
+                    "evidence because the security boundary state controls how the later lookup is interpreted.";
+                Evidence.boundCheckObserved = false;
+
+                bool Seen = false;
+                for (const auto &Existing : Info.crossFunctionDirectEvidence) {
+                    // 如果同樣的 evidence 已經存在，就不重複加入。 
+                    if (Existing.kind == Evidence.kind && Existing.expression == Evidence.expression) {
+                        Seen = true;
+                        break;
+                    }
+                }
+                if (!Seen) Info.crossFunctionDirectEvidence.push_back(Evidence);
+                break;
+            }
+        }
+    }
+
+    /* 根據 call arguments 的字面名稱，猜測這些資料來源像不像外部輸入、parser 狀態、user/file 來源 */
     static std::string classifyInputOrigin(const std::vector<std::string> &ArgTexts) {
         std::string Combined = lowerCopy(joinStrings(ArgTexts, " "));
         if (containsAny(Combined, {"request", "req", "http", "uri", "header", "body", "socket", "recv", "read", "packet", "buf", "buffer", "data", "input", "chunk"})) {
@@ -481,6 +578,7 @@ private:
         return "unclear from call arguments";
     }
 
+    /* 把 classifyInputOrigin() 的結果轉成比較中性、適合輸出的描述。對於LLM判斷時候叫敏感 */
     //將classifyInputOrigin的結果再中和成一個更 general 的 hint，這是對 control path importance 的一個 strong/medium/weak signal。它會幫助我們在沒有 call graph depth 的情況下，先對 caller 的「位置」做一個初步的判斷。
     static std::string neutralInputOriginHint(const std::string &InputOrigin) {
         if (InputOrigin == "syntactic input-like argument" || InputOrigin == "syntactic user/file-like argument") {
@@ -495,6 +593,7 @@ private:
         return "unclear from syntax";
     }
 
+    /* 根據 caller 傳入的 arguments，產生一句人類可讀的 relevance 描述 */
     static std::string summarizeCallerRelevance(const std::vector<std::string> &ArgTexts, const std::string &InputOrigin) {
         std::string Combined = lowerCopy(joinStrings(ArgTexts, " "));
         std::vector<std::string> Details;
@@ -510,6 +609,9 @@ private:
         return "passes " + joinStrings(uniqueStrings(Details), ", ") + " into current function";
     }
 
+    /* 根據 argument 的字面名稱，將其分類到不同的類別中
+    例：foo(buf, len, ctx, path);被分成（buffer/pointer, length-like value, parser state, path/file resource)
+    */
     static std::vector<std::string> classifyArgumentCategories(const std::vector<std::string> &ArgTexts) {
         std::string Combined = lowerCopy(joinStrings(ArgTexts, " "));
         std::vector<std::string> Categories;
@@ -551,21 +653,25 @@ private:
         return uniqueStrings(Categories);
     }
 
+    /* 看 caller 的 function name 是否像「處理流程上的重要 function」 */
     static bool callerNameLooksRelevant(const std::string &FuncName) {
         std::string Name = lowerCopy(FuncName);
         return containsAny(Name, {"parser", "parse", "read", "decode", "load", "handle", "process", "scan", "check", "validate", "dispatch", "main"});
     }
 
+    /* 看 caller 名稱是否像入口點或外部輸入接收點。 */
     static bool callerNameLooksLikeEntry(const std::string &FuncName) {
         std::string Name = lowerCopy(FuncName);
         return containsAny(Name, {"main", "read", "recv", "request", "handle_request", "entry"});
     }
 
+    /* 看 caller 名稱是否像 parser / decoder / validation path */
     static bool callerNameLooksParserLike(const std::string &FuncName) {
         std::string Name = lowerCopy(FuncName);
         return containsAny(Name, {"parser", "parse", "decompile", "decode", "load", "scan", "check", "validate", "dispatch"});
     }
 
+    /* 判斷 function 是否像 logging/debug/error helper */
     static bool isLoggingOrDebugHelper(const std::string &FuncName) {
         std::string Name = lowerCopy(FuncName);
         return containsAny(Name, {
@@ -574,14 +680,23 @@ private:
         });
     }
 
+    /* 看 arguments 字串是否像外部輸入資料 */
     static bool argsLookInputLike(const std::string &Args) {
         return containsAny(Args, {"buf", "buffer", "data", "input", "chunk", "packet", "file", "argv", "env", "user", "request", "stdin"});
     }
 
+    /* 看 arguments 是否像 parser 結構化狀態 */
     static bool argsLookStructuredParserLike(const std::string &Args) {
         return containsAny(Args, {"state", "ctx", "context", "parser", "action", "tag", "field", "opcode", "len", "length", "size", "offset", "cursor"});
     }
-    //決定 callers[] 裡 top callers 的排序
+    
+    /* 幫 caller edge 打分數，根據 caller 傳入的 arguments 和 caller name，估計這條 caller relation 有多值得關注 */
+    // 決定 callers[] 裡 top callers 的排序
+    // 把比較可能承載外部輸入、parser 狀態、buffer/length/index 的 caller 排前面。
+    // scoreCallerRelevance() 的分數是為了排序 caller，不是證明漏洞；
+    // +3 給直接且高價值的 argument signal，+2 給較弱但有用的 caller/input context，+1 給 parser-derived hint，
+    // 讓 caller_summary 優先顯示最可能承載外部輸入或 parser/control-path 資料的 caller。
+    // 優先保留最能提供攻擊面、資料流、邊界條件、parser/control-path 線索的 caller，讓後續漏洞分析更快聚焦。
     static int scoreCallerRelevance(const FunctionInfo &Caller, const CallInfo &Call, const std::string &InputOrigin) {
         std::string Args = lowerCopy(joinStrings(Call.argTexts, " "));
         int Score = 0;
@@ -596,6 +711,7 @@ private:
         return Score;
     }
 
+    /* 判斷 caller 這條呼叫關係，是否看起來位在外部輸入或 parser/control path 上。 */
     //從 caller context 看，這個 function 是否可能位在外部輸入或 parser path 上，這是對 control path importance 的一個 strong/medium/weak signal。它會幫助我們在沒有 call graph depth 的情況下，先對 caller 的「位置」做一個初步的判斷。
     static std::string classifyInputPathHint(const FunctionInfo &Caller, const CallInfo &Call, const std::string &InputOrigin) {
         std::string Args = lowerCopy(joinStrings(Call.argTexts, " "));
@@ -609,6 +725,7 @@ private:
         return "weak";
     }
 
+    /* 用一句話描述 caller 在 control path 裡的角色。 */
     //role_hint 是根據 caller 名稱、argument pattern、relevance score 產生的描述文字。
     static std::string summarizeControlPathRole(const FunctionInfo &Caller, const CallInfo &Call, int RelevanceScore) {
         std::string Args = lowerCopy(joinStrings(Call.argTexts, " "));
@@ -624,6 +741,7 @@ private:
         return "connected by a direct call, but control-path importance is unclear";
     }
 
+    /* 判斷某個 function 名稱是否像 cleanup/free/lifetime helper。 */
     //cleanup helper 判斷
     static bool isCleanupOrFreeHelper(const std::string &Name) {
         std::string N = lowerCopy(Name);
@@ -637,6 +755,7 @@ private:
         });
     }
 
+    /* 判斷某個 function 是否有高價值的安全操作 */
     //高價值 security operation 判斷，這些 operation 的出現通常是安全檢查、權限變更、重要資源存取等關鍵安全行為的 strong signal
     static bool hasHighValueSecurityOperation(const std::vector<std::string> &OperationClasses) {
         std::string Ops = lowerCopy(joinStrings(OperationClasses, " "));
@@ -682,9 +801,9 @@ private:
         Signals.push_back(Signal);
     }
 
-    // 針對被呼叫者（Callee）的分析。它會掃描被呼叫函數的名字和原始碼，尋找既有的危險特徵：
+    // 根據 function name + source code 的關鍵字，偵測 callee 可能涉及哪些安全相關 operation。
     static std::vector<std::string> detectDangerSignals(const std::string &FuncName, const std::string &Code) {
-        std::string Text = lowerCopy(FuncName + " " + Code);
+        std::string Text = lowerCopy(FuncName + " " + Code); // 將callee 名稱和 callee 原始碼合併，轉小寫後搜尋關鍵字。
         std::vector<std::string> Signals;
         if (containsAny(Text, {"memcpy", "memmove", "bcopy", "strcpy", "strncpy", "strcat", "strncat", "sprintf", "snprintf", "copy"})) {
             Signals.push_back("memory copy");
@@ -706,6 +825,12 @@ private:
         return uniqueStrings(Signals);
     }
 
+    /* 負責從 callee 名稱與原始碼抓安全語意：
+    這個 callee 看起來在做什麼安全相關操作？
+    它可能屬於哪類 weakness family？
+    它在 caller/callee 關係中扮演什麼角色？ 
+    */
+    // 針對被呼叫者（Callee）的分析。根據 function name + source code 的關鍵字，偵測 callee 可能涉及哪些安全相關 operation。
     // Taxonomy-guided operation signals are kept separate from legacy string danger signals.
     static std::vector<OperationSignal> detectOperationSignals(const std::string &FuncName, const std::string &Code) {
         std::string Text = lowerCopy(FuncName + " " + Code);
@@ -840,6 +965,9 @@ private:
         return Signals;
     }
 
+    /* 把 signal 拆成可統計欄位，從 vector<OperationSignal> 裡抽出 operation class 清單，輸出JSON 裡的：
+    "operation_classes": [...]
+    "operation_signals": [...] */
     //輸出可統計欄位
     static std::vector<std::string> extractOperationClasses(const std::vector<OperationSignal> &Signals){
         std::vector<std::string> Result;
@@ -849,6 +977,8 @@ private:
         return uniqueStrings(Result);
     }
 
+    /* 把 signal 拆成可統計欄位，從 vector<OperationSignal> 裡抽出 CWE family 清單，輸出JSON 裡的：
+    "cwe_families": [...] */
     static std::vector<std::string> extractCweFamilies(const std::vector<OperationSignal> &Signals){
         std::vector<std::string> Result;
         for (const auto &S : Signals) {
@@ -857,6 +987,7 @@ private:
         return uniqueStrings(Result);
     }
 
+    /* 把 operation signal 變成人類可讀的短摘要 */
     static std::vector<std::string> summarizeOperationSignals(const std::vector<OperationSignal> &Signals){
         std::vector<std::string> Result;
         for (const auto &S : Signals) {
@@ -866,7 +997,7 @@ private:
     }
 
     
-
+    /* 根據 callee 的 operation signals，產生一句人類可讀的 relevance 描述 */
     static std::string summarizeCalleeRelevance(const std::vector<std::string> &Signals, const std::vector<std::string> &OperationClasses) {
         std::vector<std::string> Parts;
         if (!Signals.empty()) {
@@ -879,6 +1010,9 @@ private:
         return joinStrings(Parts, " "); 
     }
 
+    /* 根據 callee 的 signals / operation classes，給它一個角色描述。
+       則把這些 signal 轉成 JSON 中可讀、可排序、可供後續分析使用的摘要。 */
+    // summarizeCalleeRoleHint() 是為了把 callee 的底層安全 signals 轉成高階角色描述，讓 callee_summary 更容易讀、能區分 downstream evidence 類型，也幫後續人工或 LLM 分析快速聚焦。
     static std::string summarizeCalleeRoleHint(const std::vector<std::string> &Signals, const std::vector<std::string> &OperationClasses) {
         std::string SignalText = lowerCopy(joinStrings(Signals, " "));
         std::string OperationText = lowerCopy(joinStrings(OperationClasses, " "));
@@ -916,6 +1050,7 @@ private:
         return "direct helper";
     }
 
+    /* 幫 callee_summary 判斷哪些 callee 比較值得被選進 top callees */
     static int scoreCalleeDangerSignals(const std::vector<std::string> &Signals) {
         int Score = 0;
         for (const auto &Signal : Signals) {
@@ -927,6 +1062,7 @@ private:
         return std::min(Score, 2);
     }
 
+    /* detectOperationSignals() 偵測出來的高階操作類型， 判斷這個 callee 本身涉及的操作有多安全敏感，供 callee 排序與 tie-breaker 使用 */
     static int scoreCalleeOperationSignals(const std::vector<OperationSignal> &Signals) {
         int Score = 0;
 
@@ -962,7 +1098,7 @@ private:
     }
 
     
-
+    /* （也就是 classifyArgumentCategories() 的結果）看 caller 傳給 callee 的 arguments 像不像安全重要資料  */
     static int scoreCalleeArgumentFlow(const std::vector<std::string> &Categories) {
         int Score = 0;
         for (const auto &Category : Categories) {
@@ -985,7 +1121,11 @@ private:
         return std::min(Score, 8);
     }
 
-    //有些 function 沒有明顯 memory operation，但位於 security-critical path 上，仍然值得關注。例如一個叫 check_policy 的 function，裡面沒有明顯的 memory operation，但它的名字和內容都強烈暗示它在做安全檢查。這種情況下，我們可以給它一個額外的分數加成，以反映它在安全上下文中的重要性。
+    /* 為了keyword 訊號較弱，容易誤判，所以設計看 callee 自己的 name/code 是否像安全相關邏輯 */
+    //有些 function 沒有明顯 memory operation，但位於 security-critical path 上，仍然值得關注。
+    // 例如一個叫 check_policy 的 function，裡面沒有明顯的 memory operation，但它的名字和內容都強烈暗示它在做安全檢查。
+    // 這種情況下，我們可以給它一個額外的分數加成，以反映它在安全上下文中的重要性。
+    // 為什麼只最多 2？ 因為它是根據 function name/code 字串做 keyword search，容易有雜訊。
     static int scoreSecurityContext(const std::string &FuncName, const std::string &Code) {
         
         if (isLoggingOrDebugHelper(FuncName)) {
@@ -1020,8 +1160,11 @@ private:
     }
 
 
-    
-
+    /* 如果只輸出 direct call graph，資訊會太粗："callees": ["copy_data", "log_debug", "cleanup", "check_policy"]
+         這裡要幫 callee_summary 補充更多訊息，讓它更容易被人工或 LLM 分析聚焦。    
+         scoreCalleeRoleMatch（）不是 callee 有 signal 就重要，而是「傳進去的資料」和「callee 的功能」有沒有形成安全相關關係。
+    */
+    /*判斷「傳給 callee 的參數類型」和「callee 本身看起來在做的事」是否匹配。問：目前 function 傳進去的資料，是否剛好符合 callee 的敏感操作？*/
     static int scoreCalleeRoleMatch(
         const std::string &FuncName,
         const std::vector<std::string> &Categories,
@@ -1117,9 +1260,14 @@ private:
             Score += 3;
         }
 
-        return std::min(Score, 8);
+        return std::min(Score, 8); // 封頂的原因是避免一個 callee 因為同時命中很多 keyword 而分數爆炸。它是排序 heuristic，不是漏洞評分。
     }
 
+    /* keyword signal 要怎麼保守輸出？
+    detectDangerSignals() 會產生比較直接、甚至有點強烈的詞：memory copy, buffer write, string handling, parser state update，但這些是 keyword heuristic。
+    看到 memcpy 不代表一定有 overflow；看到 check 不代表一定是安全驗證。
+    所以 neutralizeCalleeSignals() 的目的就是：把「可能危險」的 keyword signal 轉成比較保守、中性的描述，避免輸出把線索講成結論。
+     */
     static std::vector<std::string> neutralizeCalleeSignals(const std::vector<std::string> &Signals) {
         std::vector<std::string> Neutral;
         for (const auto &Signal : Signals) {
@@ -1165,6 +1313,7 @@ private:
 
         // Cleanup/free helpers are useful supporting context,
         // but should not dominate top-k unless they contain high-value security operations.
+        /* cleanup/free helper 可以是重要上下文，但如果它沒有高價值安全操作，就不要讓它分數太高、擠掉更重要的 callee。 */
         if (isCleanupOrFreeHelper(Edge.funcName) &&
             !hasHighValueSecurityOperation(Edge.operationClasses)) {
             Edge.relevanceScore = std::min(Edge.relevanceScore, 10);
@@ -1175,6 +1324,11 @@ private:
 
     static constexpr size_t kMaxCallContextEdges = 5;
 
+    /* 控制 callee_summary 只留下最值得看的下游關係:
+        1. 過濾掉 relevanceScore == 0 的 callee
+        2. 依安全分析價值排序
+        3. 最多保留 kMaxCallContextEdges，也就是 5 個
+    */
     static std::vector<CalleeEdge> selectTopCallees(const std::vector<CalleeEdge> &Edges) {
         std::vector<CalleeEdge> Ranked;
         for (const auto &Edge : Edges) {
@@ -1193,6 +1347,7 @@ private:
         return Ranked;
     }
 
+    /* 把 top callees 轉成人類/LLM 好讀的摘要文字 */
     static std::vector<std::string> buildCalleeSummaryLines(const std::vector<CalleeEdge> &TopEdges) {
         std::vector<std::string> Lines;
         if (TopEdges.empty()) {
@@ -1218,6 +1373,7 @@ private:
         return Lines;
     }
 
+    /*安全地把 vector<string> 輸出成 JSON array*/
     static std::string buildJsonStringArray(const std::vector<std::string> &Values) {
         std::ostringstream OS;
         OS << "[";
@@ -1229,6 +1385,12 @@ private:
         return OS.str();
     }
 
+    /**
+     * Builds a JSON string representing cross-function direct evidence.
+     * @param EvidenceList The list of direct evidence to include.
+     * @return A JSON string containing the evidence.
+     */
+    /*把「跨函式但可歸因目前 function」的直接證據輸出成 JSON*/
     static std::string buildCrossFunctionDirectEvidenceJson(const std::vector<DirectEvidence> &EvidenceList) {
         std::vector<std::string> Lines;
 
@@ -1280,15 +1442,17 @@ private:
         return OS.str();
     }
 
+    /* 一個 function 可能被很多 caller 呼叫，不可能每個都詳細輸出，所以要選出最重要的 caller。 */
     static std::vector<CallerEdge> selectTopCallers(const std::vector<CallerEdge> &Edges) {
         std::vector<CallerEdge> Ranked = Edges;
         std::stable_sort(Ranked.begin(), Ranked.end(), [](const CallerEdge &A, const CallerEdge &B) {
-            return A.relevanceScore > B.relevanceScore;
+            return A.relevanceScore > B.relevanceScore; //relevanceScore 來自scoreCallerRelevance()
         });
         if (Ranked.size() > kMaxCallContextEdges) Ranked.resize(kMaxCallContextEdges);
         return Ranked;
     }
 
+    /*產生 caller_summary.summary_lines 的第一句主摘要。*/
     static std::string buildCallerSummaryLine(const std::vector<CallerEdge> &TopEdges) {
         if (TopEdges.empty()) return "No direct caller was found for this function in the current translation unit.";
 
@@ -1305,6 +1469,7 @@ private:
         return Line;
     }
 
+    /* 產生完整的 caller summary lines。 */
     static std::vector<std::string> buildCallerSummaryLines(const std::vector<CallerEdge> &TopEdges) {
         std::vector<std::string> Lines;
         Lines.push_back(buildCallerSummaryLine(TopEdges));
@@ -1320,7 +1485,7 @@ private:
         Lines.push_back("Note: caller context is upstream relation evidence only, not direct evidence for the current function body.");
         return Lines;
     }
-
+    /*輸出完整的 JSON 欄位： "caller_summary": { ... } */
     static std::string buildCallerSummaryJson(
         const FunctionInfo &Info,
         const std::map<std::string, std::vector<CallerEdge>> &CallersByCallee
@@ -1353,6 +1518,7 @@ private:
         return OS.str();
     }
 
+    /*輸出完整的 JSON 欄位："callee_summary": { ... } */
     static std::string buildCalleeSummaryJson(const FunctionInfo &Info, const std::map<std::string, FunctionInfo *> &ByName) {
         std::vector<CallInfo> UniqueCalls;
         std::set<std::string> Seen;
@@ -1414,28 +1580,7 @@ private:
     }
    
 
-    // ========================================================
-    // 2. 從 SourceRange 抽出原始碼文字
-    // ========================================================
-    static std::string getFunctionSourceText(const FunctionDecl &FD, const SourceManager &SM, const LangOptions &LO){
-        //FunctionDecl 的 SourceRange 通常涵蓋 signature + body
-        SourceRange SR = FD.getSourceRange();
 
-        // getEndLoc() 指向的是最後一個 Token 的「開頭」（也就是 '}' 的左邊）。
-        // 我們需要的是 '}' 的「右邊」。
-        // 所以要用 CharSourceRange::getTokenRange 讓 Lexer 知道我們要包含最後那個 Token。
-
-        CharSourceRange CSR = CharSourceRange::getTokenRange(SR);      
-        bool Invalid = false;  
-
-        // Lexer::getSourceText 是 Clang 提供的一個靜態函式，用於從指定的 CharSourceRange 中提取原始程式碼文字。
-        //static StringRef getSourceText(CharSourceRange Range, const SourceManager &SM, const LangOptions &LangOpts, bool *Invalid = nullptr);            
-        StringRef Text = Lexer::getSourceText(CSR, SM, LO, &Invalid); 
-        
-        if(Invalid) return "<Error extracting source text>";
-        return Text.str(); //轉成 std::string 回傳
-
-    }
 
     
 };
@@ -1458,6 +1603,9 @@ class FindFunctionsConsumer : public ASTConsumer {
 };
 
 
+// ========================================================
+// 1. ASTFrontendAction: 負責建立 ASTConsumer
+// ========================================================
 //  ASTConsumer：TranslationUnit 建好後啟動 Visitor
 class FindFunctionsAction : public ASTFrontendAction {
     public:

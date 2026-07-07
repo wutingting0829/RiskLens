@@ -445,7 +445,7 @@ def write_score_json(report_path: str, score_json_path: str) -> None:
     payload = build_score_payload(report_path)
     write_json(score_json_path, payload)
 
-
+# LLM 的輸出是 LLMFactorResult JSON，之後由 Python 計算 CVSS 與 prioritization score。
 def parse_llm_factors(client: OpenAI, model: str, messages: List[dict]) -> LLMFactorResult:
     payload = {
         "model": model,

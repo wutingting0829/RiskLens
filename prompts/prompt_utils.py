@@ -89,6 +89,7 @@ def format_function_metadata(rec: dict) -> str:
 # 分析目標函數的呼叫上下文：
 # 包含 caller、callee，以及相關函數之間的關聯性
 # 把 extractor 產生的 caller/callee/cross-function evidence 整理成文字，放進 user prompt。
+# format_call_context() 是「資料」
 def format_call_context(rec: dict) -> str:
     caller_summary = rec.get("caller_summary") or {}
     callee_summary = rec.get("callee_summary") or {}
